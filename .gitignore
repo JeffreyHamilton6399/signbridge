@@ -1,0 +1,17 @@
+node_modules
+dist
+dist-ssr
+coverage
+playwright-report
+test-results
+.DS_Store
+*.local
+.vite
+# Vendored at install time by `npm run fetch:models` — large binaries, not source.
+public/mediapipe/wasm
+public/mediapipe/models
+# Trained model artifacts live here; ship them deliberately, don't commit blindly.
+training/data
+training/runs
+__pycache__
+.venv

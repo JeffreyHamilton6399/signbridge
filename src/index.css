@@ -1,0 +1,161 @@
+@import 'tailwindcss';
+
+/* Theme is driven by a class on <html> so the user's explicit choice beats the
+   OS preference. `system` resolves to a class at runtime (see theme.ts). */
+@custom-variant dark (&:where(.dark, .dark *));
+@custom-variant hc (&:where(.contrast-high, .contrast-high *));
+
+@theme {
+  --font-display: 'Fraunces', 'Iowan Old Style', Georgia, serif;
+  --font-ui: 'Inter Tight', ui-sans-serif, system-ui, sans-serif;
+  --font-dyslexic: 'OpenDyslexic', 'Comic Sans MS', var(--font-ui);
+
+  --color-ink-900: #07090e;
+  --color-ink-800: #0b0e14;
+  --color-ink-700: #141924;
+  --color-ink-600: #1e2532;
+  --color-ink-500: #2b3444;
+  --color-ink-400: #4a5567;
+  --color-ink-300: #79859a;
+  --color-ink-200: #aab3c2;
+  --color-ink-100: #d9dee6;
+  --color-ink-50: #f1f3f7;
+
+  --color-signal: #f2b53c;
+  --color-signal-dim: #8a6a24;
+  --color-tentative: #7f8ea6;
+  --color-alert: #e8695a;
+  --color-ok: #6fcf8f;
+
+  --radius-panel: 1.25rem;
+  --ease-commit: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+:root {
+  --sb-bg: var(--color-ink-50);
+  --sb-panel: #ffffff;
+  --sb-panel-edge: #dfe4ec;
+  --sb-fg: #10141c;
+  --sb-fg-muted: #58637a;
+  --sb-caption-shadow: 0 1px 2px rgb(255 255 255 / 0.9);
+  color-scheme: light;
+}
+
+.dark {
+  --sb-bg: var(--color-ink-800);
+  --sb-panel: color-mix(in oklab, var(--color-ink-700) 88%, transparent);
+  --sb-panel-edge: #262f3f;
+  --sb-fg: #f4f1ea;
+  --sb-fg-muted: var(--color-ink-300);
+  --sb-caption-shadow: 0 2px 14px rgb(0 0 0 / 0.85);
+  color-scheme: dark;
+}
+
+.contrast-high {
+  --sb-bg: #000000;
+  --sb-panel: #000000;
+  --sb-panel-edge: #ffffff;
+  --sb-fg: #ffffff;
+  --sb-fg-muted: #ffffff;
+  --color-signal: #ffd500;
+  --color-tentative: #cfcfcf;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--sb-bg);
+  color: var(--sb-fg);
+  font-family: var(--font-ui);
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior: none;
+}
+
+/* Font preference is applied at the root and inherited; captions opt back into
+   the display face unless the user picked a legibility face. */
+[data-font='dyslexic'] {
+  --font-display: var(--font-dyslexic);
+  --font-ui: var(--font-dyslexic);
+}
+[data-font='system'] {
+  --font-display: ui-sans-serif, system-ui, sans-serif;
+  --font-ui: ui-sans-serif, system-ui, sans-serif;
+}
+
+:focus-visible {
+  outline: 3px solid var(--color-signal);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.sb-panel {
+  background: var(--sb-panel);
+  border: 1px solid var(--sb-panel-edge);
+  backdrop-filter: blur(18px);
+}
+
+/* ---- The signature moment -------------------------------------------------
+   A letter is tentative while the dwell timer runs and firms up the instant it
+   commits. Weight, tracking and opacity all resolve together, so uncertainty is
+   legible in the typography itself rather than in a separate widget. */
+.sb-glyph {
+  display: inline-block;
+  font-family: var(--font-display);
+  font-variation-settings: 'wght' var(--sb-wght, 700), 'opsz' 120;
+  transition:
+    font-variation-settings 90ms linear,
+    opacity 90ms linear,
+    letter-spacing 90ms linear;
+}
+.sb-glyph--tentative {
+  color: var(--color-tentative);
+}
+.sb-glyph--commit {
+  animation: sb-commit 420ms var(--ease-commit) both;
+}
+
+@keyframes sb-commit {
+  0% {
+    transform: translateY(0.06em) scale(1.14);
+    letter-spacing: 0.06em;
+    color: var(--color-signal);
+    text-shadow: 0 0 26px color-mix(in oklab, var(--color-signal) 60%, transparent);
+  }
+  60% {
+    color: var(--color-signal);
+  }
+  100% {
+    transform: none;
+    letter-spacing: 0;
+    color: var(--sb-fg);
+    text-shadow: var(--sb-caption-shadow);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sb-glyph,
+  .sb-glyph--commit {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+[data-reduced-motion='on'] .sb-glyph--commit {
+  animation: none !important;
+}
+[data-reduced-motion='on'] * {
+  animation-duration: 0.001ms !important;
+  transition-duration: 0.001ms !important;
+}
+
+.sb-scroll::-webkit-scrollbar {
+  width: 10px;
+}
+.sb-scroll::-webkit-scrollbar-thumb {
+  background: var(--sb-panel-edge);
+  border-radius: 99px;
+}

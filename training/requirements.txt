@@ -1,0 +1,11 @@
+# Pinned so a training run is reproducible. Bump deliberately, and re-run
+# test_parity.py afterwards.
+numpy==2.2.1
+torch==2.6.0
+onnx==1.17.0
+onnxruntime==1.20.1
+mediapipe==0.10.21
+opencv-python-headless==4.11.0.86
+scikit-learn==1.6.1
+tqdm==4.67.1
+pandas==2.2.3
