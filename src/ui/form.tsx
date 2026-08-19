@@ -82,11 +82,14 @@ export function Toggle({
             : 'border-[var(--sb-panel-edge)] bg-transparent'
         }`}
       >
+        {/* `left` is explicit: an absolutely positioned span with no inset takes
+            its static position from the button's centred text alignment, which
+            puts the knob outside the track. */}
         <span
-          className={`absolute top-0.5 h-4.5 w-4.5 rounded-full transition-transform ${
-            checked ? 'translate-x-5.5 bg-[#1a1200]' : 'translate-x-0.5 bg-[var(--sb-fg-muted)]'
+          aria-hidden="true"
+          className={`absolute top-[0.1875rem] left-[0.1875rem] h-[1.125rem] w-[1.125rem] rounded-full transition-transform ${
+            checked ? 'translate-x-[1.25rem] bg-[#1a1200]' : 'translate-x-0 bg-[var(--sb-fg-muted)]'
           }`}
-          style={{ height: '1.125rem', width: '1.125rem' }}
         />
       </button>
     </div>

@@ -16,6 +16,9 @@ test.describe('shell', () => {
 
   test('never uses the word "interpreter" for the software itself', async ({ page }) => {
     await page.goto('/');
+    // Settings hydrate from IndexedDB first; reading body before that returns
+    // the loading screen, which contains none of the copy under test.
+    await expect(page.getByRole('note')).toBeVisible();
     const body = (await page.textContent('body')) ?? '';
     // Every occurrence must be a disclaimer about human interpreters.
     const matches = [...body.matchAll(/interpreter/gi)];
@@ -53,7 +56,9 @@ test.describe('shell', () => {
 
   test('is keyboard reachable', async ({ page }) => {
     await page.goto('/');
-    await page.keyboard.press('Tab');
+    // Press against <body> rather than page.keyboard, so the key lands in the
+    // document instead of wherever the browser happened to leave focus.
+    await page.locator('body').press('Tab');
     await expect(page.getByRole('link', { name: /skip to controls/i })).toBeFocused();
   });
 });

@@ -92,3 +92,24 @@ and are flagged here as assumptions to revisit — each one is cheap to change.
   mode is real.
 - **Disclaimer is non-dismissible, and an E2E test asserts the word
   "interpreter" only ever appears in a disclaiming context.**
+
+## Found by looking at the running app
+
+Two things that typechecked, passed unit tests, and were still broken. Both were
+caught by screenshotting the built app against a fake camera device.
+
+- **`FilesetResolver.forVisionTasks(path, true)`** — the `useModule` flag is
+  required because Vite builds the vision worker as an ES module, where
+  `importScripts` does not exist. Without it MediaPipe loads its classic-script
+  runtime, never installs its factory, and every frame dies with
+  "ModuleFactory not set". Nothing in the type system catches this.
+- **Chrome over live video keeps the dark treatment in every theme**
+  (`.sb-on-video`). In light theme, dark caption text sat on the dark scrim that
+  makes hands readable, and was invisible. The scrim cannot lighten without
+  washing out the hands, so the chrome adapts instead of the video.
+
+Also fixed in the same pass: captions were rendering underneath the control bar
+at the bottom edge; the settings toggle knob rendered outside its track (an
+absolutely positioned span with no `left` inherits the button's centred text
+alignment as its static position); and the settings close button's `aria-label`
+did not contain its visible label, which is a WCAG 2.5.3 failure.

@@ -15,3 +15,6 @@ training/data
 training/runs
 __pycache__
 .venv
+
+# TypeScript incremental build state
+*.tsbuildinfo

@@ -152,6 +152,29 @@ body {
   transition-duration: 0.001ms !important;
 }
 
+
+/* ---- Chrome laid over live video --------------------------------------------
+   The camera view is the document, so anything sitting on top of it reads
+   against video, not against the page background. These panels and captions
+   therefore keep the dark treatment in every theme — a light-theme caption over
+   a dark video scrim is unreadable, and the scrim cannot lighten without
+   washing out the hands underneath it. */
+.sb-on-video {
+  --sb-fg: #f4f1ea;
+  --sb-fg-muted: #b8c1d0;
+  --sb-panel: color-mix(in oklab, #141924 84%, transparent);
+  --sb-panel-edge: #39445a;
+  --sb-caption-shadow: 0 2px 14px rgb(0 0 0 / 0.85);
+  color: var(--sb-fg);
+}
+
+.contrast-high .sb-on-video {
+  --sb-fg: #ffffff;
+  --sb-fg-muted: #ffffff;
+  --sb-panel: #000000;
+  --sb-panel-edge: #ffffff;
+}
+
 .sb-scroll::-webkit-scrollbar {
   width: 10px;
 }

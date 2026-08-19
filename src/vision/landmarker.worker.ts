@@ -60,7 +60,11 @@ async function resolveAsset(local: string, fallback: string): Promise<string> {
 async function build(opts: VisionInitOptions): Promise<void> {
   const localWasm = `${opts.wasmPath}/vision_wasm_internal.js`;
   const wasmPath = (await resolveAsset(localWasm, '')) === localWasm ? opts.wasmPath : CDN_ROOT;
-  const fileset = await FilesetResolver.forVisionTasks(wasmPath);
+  // `useModule: true` is required because Vite builds this worker as an ES
+  // module (`worker.format: 'es'`), where `importScripts` does not exist.
+  // Without it MediaPipe loads the classic-script runtime, fails to install its
+  // factory, and every call dies with "ModuleFactory not set".
+  const fileset = await FilesetResolver.forVisionTasks(wasmPath, true);
   const handModelPath = await resolveAsset(opts.handModelPath, CDN_MODELS.hand);
   const poseModelPath = await resolveAsset(opts.poseModelPath, CDN_MODELS.pose);
 

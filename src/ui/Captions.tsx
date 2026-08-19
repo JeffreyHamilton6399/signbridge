@@ -34,15 +34,16 @@ export function Captions() {
       ? 'top-16 bottom-auto'
       : display.captionPosition === 'side'
         ? 'top-16 bottom-24 right-0 left-auto w-[min(38ch,42vw)]'
-        : 'bottom-0 top-auto';
+        : // Clears the control bar; captions must never sit under the buttons.
+          'bottom-24 top-auto';
 
   return (
     <div
-      className={`pointer-events-none absolute ${display.captionPosition === 'side' ? '' : 'inset-x-0'} ${position} z-20 flex justify-center`}
+      className={`sb-on-video pointer-events-none absolute ${display.captionPosition === 'side' ? '' : 'inset-x-0'} ${position} z-20 flex justify-center`}
     >
       <div
         ref={scrollRef}
-        className="sb-scroll max-h-[42vh] w-full max-w-5xl overflow-y-auto px-5 pb-6"
+        className="sb-scroll max-h-[38vh] w-full max-w-5xl overflow-y-auto px-5 pb-2"
         aria-live="polite"
         aria-atomic="false"
         aria-label="Recognised text"

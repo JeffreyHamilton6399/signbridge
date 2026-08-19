@@ -182,14 +182,14 @@ function Shell() {
         </>
       )}
 
-      <div className="absolute inset-x-0 top-0 z-40">
+      <div className={`absolute inset-x-0 top-0 z-40 ${cameraMode && pipeline.active ? 'sb-on-video' : ''}`}>
         <Disclaimer />
       </div>
 
       {/* Mode rail — extreme left edge, out of the frame's centre. */}
       <nav
         aria-label="Mode"
-        className="absolute top-1/2 left-2 z-30 flex -translate-y-1/2 flex-col gap-1.5"
+        className={`absolute top-1/2 left-2 z-30 flex -translate-y-1/2 flex-col gap-1.5 ${cameraMode && pipeline.active ? 'sb-on-video' : ''}`}
       >
         {MODES.map((m) => {
           const disabled = m.id === 'conversation' && !settings.experimental.conversationMode;
@@ -214,7 +214,7 @@ function Shell() {
       </nav>
 
       {/* Top-right utilities. */}
-      <div className="absolute top-3 right-3 z-40 flex gap-1.5 pt-[env(safe-area-inset-top)]">
+      <div className={`absolute top-3 right-3 z-40 flex gap-1.5 pt-[env(safe-area-inset-top)] ${cameraMode && pipeline.active ? 'sb-on-video' : ''}`}>
         {cameraMode && pipeline.active && (
           <button
             type="button"
@@ -281,7 +281,7 @@ function Shell() {
 
       {/* Bottom control bar — extreme edge, below the caption band. */}
       {cameraMode && pipeline.active && (
-        <div className="absolute inset-x-0 bottom-0 z-30 flex flex-col gap-2 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+        <div className="sb-on-video absolute inset-x-0 bottom-0 z-30 flex flex-col gap-2 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <SuggestionStrip onAccept={fingerspell.acceptSuggestion} />
             <Alternates onPick={fingerspell.pickAlternate} />
@@ -303,7 +303,7 @@ function Shell() {
       )}
 
       {pipeline.error && pipeline.active && (
-        <div role="alert" className="absolute inset-x-3 bottom-24 z-40 mx-auto max-w-md">
+        <div role="alert" className="sb-on-video absolute inset-x-3 bottom-24 z-40 mx-auto max-w-md">
           <div className="sb-panel rounded-2xl border-[var(--color-alert)] p-3">
             <p className="text-sm font-semibold text-[var(--color-alert)]">{pipeline.error.message}</p>
             <p className="mt-1 text-xs text-[var(--sb-fg-muted)]">{pipeline.error.remedy}</p>

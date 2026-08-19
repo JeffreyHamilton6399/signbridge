@@ -76,7 +76,7 @@ export function SettingsPanel({
           <button
             type="button"
             onClick={onClose}
-            aria-label="Close settings"
+            aria-label="Done, close settings"
             className="rounded-lg border border-[var(--sb-panel-edge)] px-3 py-1.5 text-sm hover:border-[var(--color-signal)]"
           >
             Done
