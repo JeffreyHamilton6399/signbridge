@@ -20,6 +20,7 @@ import {
   signHint,
 } from '@/modes/signs/signTemplates';
 import { SignSegmenter } from '@/modes/signs/fewShot';
+import { DEFAULT_SETTINGS } from '@/settings/defaults';
 import { PER_FRAME_DIM } from '@/features/window';
 import { SHAPES, geometry, observation } from './helpers/geometry';
 
@@ -267,9 +268,16 @@ describe('sign recognition', () => {
     const bestResting = Math.max(...SIGN_TEMPLATES.map((t) => t.score(resting)));
     const bestReal = Math.max(...SIGN_TEMPLATES.map((t) => t.score(real)));
 
-    // The floor has to sit clearly between the two, not graze one of them.
-    expect(bestResting).toBeLessThan(REJECTION_FLOOR - 0.1);
-    expect(bestReal).toBeGreaterThan(REJECTION_FLOOR + 0.1);
+    // The floor gates whether a sign is *offered*, not whether it is written:
+    // committing additionally needs the user's confidence threshold and a
+    // margin over the runner-up. So the bar sits lower than it did, and what
+    // matters is that a resting hand stays under it at all...
+    expect(bestResting).toBeLessThan(REJECTION_FLOOR);
+    // ...that a real sign clears it with room to spare...
+    expect(bestReal).toBeGreaterThan(REJECTION_FLOOR + 0.2);
+    // ...and that a resting hand is nowhere near being written to the
+    // transcript, which is the failure that actually costs the user something.
+    expect(bestResting).toBeLessThan(DEFAULT_SETTINGS.recognition.confidenceThreshold - 0.2);
   });
 
   it('recognises HELLO — flat hand at the head, moving outward', () => {

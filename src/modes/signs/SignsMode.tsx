@@ -35,7 +35,7 @@ import { deleteCustomSign, listCustomSigns, putCustomSign } from '@/db/idb';
  * same window, which means the evidence does not separate them, not that either
  * is right. Committing the higher one is a coin toss reported as certainty.
  */
-const MIN_MARGIN = 0.12;
+const MIN_MARGIN = 0.06;
 
 export function SignsMode({
   recorderOpen,
@@ -62,7 +62,9 @@ export function SignsMode({
 
   const [signs, setSigns] = useState<Prototype[]>([]);
   const [status, setStatus] = useState<'idle' | 'signing'>('idle');
-  const [lastMiss, setLastMiss] = useState<string | null>(null);
+  const [candidate, setCandidate] = useState<
+    { label: string; confidence: number; committed: boolean; rival: string | null } | null
+  >(null);
   const [taught, setTaught] = useState<{ label: string; examples: number } | null>(null);
 
   const reload = useCallback(async () => {
@@ -77,6 +79,12 @@ export function SignsMode({
   useEffect(() => {
     void reload();
   }, [reload]);
+
+  useEffect(() => {
+    if (!candidate || candidate.committed) return;
+    const handle = setTimeout(() => setCandidate(null), 6000);
+    return () => clearTimeout(handle);
+  }, [candidate]);
 
   useEffect(() => {
     if (!taught) return;
@@ -139,17 +147,24 @@ export function SignsMode({
       // first one would be a coin toss reported as confidence.
       const decisive = !runnerUp || best.confidence - runnerUp.confidence >= MIN_MARGIN;
 
-      if (best && !decisive) {
-        setLastMiss(`${best.label} or ${runnerUp.label} — too close to call`);
-      } else if (best && best.confidence >= threshold) {
+      if (!best) {
+        setCandidate(null);
+        return;
+      }
+
+      // Offer it either way. Auto-committing needs confidence *and* a margin;
+      // falling short of either is a reason to ask rather than to say nothing,
+      // and accepting also teaches (see teach()), so a mode whose rules are
+      // imperfect still converges on being useful.
+      if (decisive && best.confidence >= threshold) {
         pushToken(best.label, best.confidence);
-        setLastMiss(null);
-      } else if (best) {
-        // Near-misses are shown rather than swallowed: knowing it nearly saw
-        // THANK-YOU is far more useful than silence.
-        setLastMiss(`${best.label} (${Math.round(best.confidence * 100)}%, below threshold)`);
+        setCandidate({ ...best, committed: true, rival: null });
       } else {
-        setLastMiss('no match');
+        setCandidate({
+          ...best,
+          committed: false,
+          rival: decisive ? null : (runnerUp?.label ?? null),
+        });
       }
     });
   }, [subscribe, dominant, matcher, segmenter, threshold, pushToken, setAlternates, recorderOpen]);
@@ -191,6 +206,15 @@ export function SignsMode({
     onTeachRef.current = teach;
   }, [teach, onTeachRef]);
 
+  const accept = useCallback(
+    (label: string) => {
+      pushToken(label, 1);
+      void teach(label);
+      setCandidate(null);
+    },
+    [pushToken, teach],
+  );
+
   return (
     <>
       {taught && (
@@ -204,25 +228,34 @@ export function SignsMode({
         </div>
       )}
 
-      <div className="pointer-events-none absolute top-28 left-3 z-30 hidden max-w-xs sm:block">
-        <div className="sb-panel sb-on-video rounded-2xl p-3 text-xs">
-          <p className="font-semibold">
-            {BUILT_IN_GLOSSES.length} built-in signs
-            {signs.length > 0 && ` · ${signs.length} of yours`}
-          </p>
-          <p className="mt-1 leading-relaxed text-[var(--sb-fg-muted)]">
-            Rule-based, no training. Accuracy is well below a trained model and several signs are
-            genuinely hard to tell apart — record your own version of any sign it keeps missing.
-          </p>
-          <p className="mt-2 flex items-center gap-1.5">
-            <span
-              className={`h-1.5 w-1.5 rounded-full ${status === 'signing' ? 'bg-[var(--color-signal)]' : 'bg-[var(--sb-panel-edge)]'}`}
-            />
-            <span className="text-[var(--sb-fg-muted)]">
-              {status === 'signing' ? 'Movement detected' : lastMiss ? `Last: ${lastMiss}` : 'Waiting for movement'}
+      {/* One status bar, on every screen size. This used to be a desktop-only
+          panel, which meant a phone user saw nothing at all when a sign was not
+          recognised — indistinguishable from the mode being broken. */}
+      <div className="pointer-events-none absolute inset-x-0 bottom-[8.5rem] z-30 flex justify-center px-3 short:bottom-[6rem]">
+        {candidate && !candidate.committed ? (
+          <button
+            type="button"
+            onClick={() => accept(candidate.label)}
+            className="sb-panel sb-on-video pointer-events-auto flex items-center gap-2 rounded-full border-[var(--color-signal)] px-4 py-2 text-sm"
+          >
+            <span className="font-[family-name:var(--font-display)] font-bold">
+              {candidate.label}
             </span>
-          </p>
-        </div>
+            <span className="text-xs tabular-nums text-[var(--sb-fg-muted)]">
+              {Math.round(candidate.confidence * 100)}%
+              {candidate.rival && ` · or ${candidate.rival}`}
+            </span>
+            <span className="text-xs font-semibold text-[var(--color-signal)]">Tap to accept</span>
+          </button>
+        ) : (
+          <span className="sb-panel sb-on-video rounded-full px-3 py-1.5 text-[11px] text-[var(--sb-fg-muted)]">
+            {status === 'signing'
+              ? 'Reading…'
+              : candidate?.committed
+                ? `${candidate.label} · ${Math.round(candidate.confidence * 100)}%`
+                : `${BUILT_IN_GLOSSES.length} signs known · sign, then pause`}
+          </span>
+        )}
       </div>
 
       <SignReference />
@@ -249,7 +282,7 @@ function SignReference() {
   const [open, setOpen] = useState(false);
 
   return (
-    <div className="pointer-events-auto absolute right-2 bottom-32 z-30 max-w-[min(22rem,calc(100vw-1rem))]">
+    <div className="pointer-events-auto absolute right-2 bottom-32 z-30 hidden max-w-[min(22rem,calc(100vw-1rem))] sm:block">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -407,6 +440,34 @@ function SignRecorder({
                 </button>
               ))}
             </div>
+
+            <details className="mt-5 rounded-xl border border-[var(--sb-panel-edge)] p-3">
+              <summary className="cursor-pointer text-xs font-semibold">
+                Signs it already knows ({BUILT_IN_GLOSSES.length})
+              </summary>
+              <ul className="mt-2 space-y-2">
+                {BUILT_IN_GLOSSES.map((gloss) => (
+                  <li key={gloss} className="text-xs">
+                    <button
+                      type="button"
+                      onClick={() => setLabel(gloss)}
+                      className="text-left font-[family-name:var(--font-display)] text-sm font-bold hover:text-[var(--color-signal)]"
+                      title={`Record your own version of ${gloss}`}
+                    >
+                      {gloss}
+                    </button>
+                    <p className="mt-0.5 leading-relaxed text-[var(--sb-fg-muted)]">
+                      {signHint(gloss)}
+                    </p>
+                    {CONFUSABLE[gloss] && (
+                      <p className="mt-0.5 text-[10px] text-[var(--color-alert)]">
+                        often confused with {CONFUSABLE[gloss].join(', ')}
+                      </p>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </details>
 
             {signs.length > 0 && (
               <div className="mt-5">

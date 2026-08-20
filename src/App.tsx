@@ -220,7 +220,7 @@ function Shell() {
           <div className="ml-auto flex shrink-0 gap-1">
             <UtilityButtons
               compact
-              showDebug={cameraMode && pipeline.active}
+              showDebug={false}
               showRecord={mode === 'signs'}
               debugOpen={debugOpen}
               onToggleDebug={() => setDebugOpen((v) => !v)}
@@ -339,7 +339,7 @@ function Shell() {
       {cameraMode && pipeline.active && !immersive && (
         <p
           aria-hidden="true"
-          className="sb-immersive-hint pointer-events-none absolute inset-x-0 bottom-[7.5rem] z-20 text-center text-[11px] text-white/55 sm:hidden"
+          className="sb-immersive-hint pointer-events-none absolute inset-x-0 top-[6.75rem] z-20 text-center text-[11px] text-white/55 sm:hidden"
         >
           Tap the view to clear the controls
         </p>

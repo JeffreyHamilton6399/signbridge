@@ -75,6 +75,10 @@ export function PipelineProvider({ children }: { children: ReactNode }) {
   const cameraSettings = settings.camera;
   const needsPose =
     settings.recognition.mode === 'signs' || settings.recognition.mode === 'conversation';
+  // Fingerspelling reads one hand and ignores the other (see pickHand), so
+  // asking the detector for two doubles the cost of the default mode for
+  // nothing. Two-handed tracking is a sign-mode concern.
+  const numHands = needsPose && settings.recognition.twoHanded ? 2 : 1;
   const targetFps = settings.performance.powerSaving
     ? Math.max(10, Math.round(cameraSettings.targetFps / 2))
     : cameraSettings.targetFps;
@@ -169,7 +173,7 @@ export function PipelineProvider({ children }: { children: ReactNode }) {
       client.setTargetFps(targetFps);
       await client.start(video, {
         trackPose: needsPose,
-        numHands: settings.recognition.twoHanded ? 2 : 1,
+        numHands,
       });
       clientRef.current = client;
       setActive(true);
@@ -188,7 +192,7 @@ export function PipelineProvider({ children }: { children: ReactNode }) {
     cameraSettings.height,
     targetFps,
     needsPose,
-    settings.recognition.twoHanded,
+    numHands,
     refreshDevices,
     setPipelineState,
     setStats,
@@ -200,9 +204,9 @@ export function PipelineProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     clientRef.current?.reconfigure({
       trackPose: needsPose,
-      numHands: settings.recognition.twoHanded ? 2 : 1,
+      numHands,
     });
-  }, [needsPose, settings.recognition.twoHanded]);
+  }, [needsPose, numHands]);
 
   useEffect(() => {
     clientRef.current?.setTargetFps(targetFps);

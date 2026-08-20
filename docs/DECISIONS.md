@@ -364,3 +364,54 @@ switches to the compact chrome regardless of width.
 
 Also: safe-area insets on full-height panels, so the Settings title clears the
 notch and the last row clears the home indicator.
+
+## Round three: still laggy, signs still bad, too many buttons
+
+All three reports were right, and two of them were faults I had introduced.
+
+### Fingerspelling was tracking a hand nobody read
+
+`numHands` came from the `twoHanded` setting, which defaults on — so the default
+mode asked MediaPipe to find two hands while `pickHand()` read exactly one. That
+is roughly double the per-frame cost of the most-used mode, spent on nothing.
+Hand count now follows the mode: one for fingerspelling, two only where
+two-handed signs are actually possible.
+
+### The signs rules had been tuned into silence
+
+Three gates in series — the rejection floor (0.55), a margin over the runner-up
+(0.12), and the user's confidence threshold (0.65) — all calibrated against
+synthetic observations that score a clean 1.0. Real ones never do: MediaPipe's
+handshapes are noisy and every clause lands a little short. The likely effect
+was a mode that had gone from *sometimes wrong* to *always silent*, which is
+indistinguishable from broken.
+
+The deeper mistake was treating recognition as a yes/no decision when the
+accuracy is unmeasured. It now **proposes**: the best candidate is always shown
+with its score, and tapping it both writes it and files the window as a training
+example. Auto-commit still needs confidence and a margin. So the floor's meaning
+changed — it gates whether a guess is *offered*, not whether it is written — and
+it moved down to 0.45 accordingly.
+
+This is the honest shape for a recogniser that cannot state its own accuracy:
+offer, let the person decide, and learn from the decision.
+
+### The only feedback in Signs mode was desktop-only
+
+The status panel was `hidden sm:block`. On a phone, an unrecognised sign
+produced nothing at all — no guess, no reason, no hint that anything had
+happened. There is now one status bar at every screen size showing what it saw
+and how sure it was.
+
+### Too many buttons
+
+Thirteen controls on a 390px screen. Now eight:
+
+- Secondary actions (fix, read aloud, export, clear) collapse behind **More** on
+  phones; there is room for all six on a wide screen, so the overflow only
+  exists where it earns its place.
+- **Debug** is a diagnostic, not a primary action — desktop and the `D` shortcut
+  only.
+- The floating **What it knows** list is desktop-only; on a phone the same list
+  lives inside the record sheet, where someone choosing what to record wants it,
+  and tapping a sign there pre-fills the name.

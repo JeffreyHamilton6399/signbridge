@@ -5,6 +5,7 @@
  * actually are. Everything here is reachable by keyboard and named by what it
  * does to the text, not by what it does to the model.
  */
+import { useState } from 'react';
 import { useSession, useSettings } from '@/store';
 
 export function SuggestionStrip({ onAccept }: { onAccept(word: string): void }) {
@@ -45,17 +46,19 @@ export interface ControlsProps {
   onExport(): void;
 }
 
+/**
+ * Six equally-weighted buttons is five too many on a phone.
+ *
+ * Backspace and Space are used constantly and stay out; the rest are occasional
+ * and go behind "More". On a wide screen there is room for all of them, so the
+ * overflow only exists where it earns its place.
+ */
 export function Controls(props: ControlsProps) {
   const hasText = useSession((s) => s.tokens.length > 0 || s.buffer.length > 0);
+  const [overflowOpen, setOverflowOpen] = useState(false);
 
-  return (
-    <div className="flex flex-wrap items-center gap-2">
-      <ControlButton label="Backspace" onClick={props.onBackspace} shortcut="Backspace">
-        <PathIcon d="M20 6H9l-5 6 5 6h11a1 1 0 0 0 1-1V7a1 1 0 0 0-1-1Zm-6 3 4 4m0-4-4 4" />
-      </ControlButton>
-      <ControlButton label="Space" onClick={props.onSpace} shortcut="Space">
-        <PathIcon d="M5 10v4h14v-4" />
-      </ControlButton>
+  const secondary = (
+    <>
       <ControlButton label="Fix last word" onClick={props.onCorrect} disabled={!hasText} shortcut="F">
         <PathIcon d="M4 20h4l10-10-4-4L4 16v4Zm10-14 4 4" />
       </ControlButton>
@@ -68,6 +71,47 @@ export function Controls(props: ControlsProps) {
       <ControlButton label="Clear" onClick={props.onClear} disabled={!hasText} destructive>
         <PathIcon d="M5 7h14M9 7V5h6v2m-8 0 1 13h8l1-13" />
       </ControlButton>
+    </>
+  );
+
+  return (
+    <div className="relative flex flex-wrap items-center gap-2">
+      <ControlButton label="Backspace" onClick={props.onBackspace} shortcut="Backspace">
+        <PathIcon d="M20 6H9l-5 6 5 6h11a1 1 0 0 0 1-1V7a1 1 0 0 0-1-1Zm-6 3 4 4m0-4-4 4" />
+      </ControlButton>
+      <ControlButton label="Space" onClick={props.onSpace} shortcut="Space">
+        <PathIcon d="M5 10v4h14v-4" />
+      </ControlButton>
+      <div className="hidden items-center gap-2 sm:flex short:hidden">{secondary}</div>
+
+      <div className="sm:hidden short:block">
+        <ControlButton
+          label="More"
+          onClick={() => setOverflowOpen((v) => !v)}
+          disabled={!hasText}
+          expanded={overflowOpen}
+        >
+          <PathIcon d="M5 12h.01M12 12h.01M19 12h.01" />
+        </ControlButton>
+      </div>
+
+      {overflowOpen && (
+        <>
+          {/* Tapping anywhere else closes it, without trapping focus. */}
+          <button
+            type="button"
+            aria-label="Close menu"
+            onClick={() => setOverflowOpen(false)}
+            className="fixed inset-0 z-40 cursor-default"
+          />
+          <div
+            className="sb-panel absolute right-0 bottom-full z-50 mb-2 flex flex-col items-stretch gap-1 rounded-2xl p-2"
+            onClick={() => setOverflowOpen(false)}
+          >
+            {secondary}
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -79,6 +123,7 @@ function ControlButton({
   disabled,
   destructive,
   shortcut,
+  expanded,
 }: {
   label: string;
   onClick(): void;
@@ -86,6 +131,7 @@ function ControlButton({
   disabled?: boolean;
   destructive?: boolean;
   shortcut?: string;
+  expanded?: boolean;
 }) {
   return (
     <button
@@ -94,6 +140,7 @@ function ControlButton({
       disabled={disabled}
       title={shortcut ? `${label} (${shortcut})` : label}
       aria-keyshortcuts={shortcut}
+      aria-expanded={expanded}
       className={`sb-panel group flex items-center gap-2 rounded-xl px-3 py-2 text-xs font-medium transition-all disabled:opacity-35 ${
         destructive ? 'hover:border-[var(--color-alert)]' : 'hover:border-[var(--color-signal)]'
       }`}

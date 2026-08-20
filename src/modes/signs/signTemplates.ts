@@ -434,10 +434,16 @@ export interface SignCandidate {
  *
  * This is the "no sign / transition" class. Without it the recogniser returns
  * its least-bad guess for every hand movement, including scratching your nose,
- * and the transcript fills with noise. Raising the number costs recall; lowering
- * it manufactures confidence that is not there.
+ * and the transcript fills with noise.
+ *
+ * Set from the synthetic separation (idle poses top out around 0.40, clean
+ * signs reach 1.0) but kept close to the idle ceiling rather than midway,
+ * because real observations never score like the synthetic ones: MediaPipe's
+ * handshapes are noisy, and every clause is a little short of perfect. Tuned to
+ * the clean numbers, this silenced the mode completely. A candidate that clears
+ * this is *offered*; committing it is a separate, higher bar.
  */
-export const REJECTION_FLOOR = 0.55;
+export const REJECTION_FLOOR = 0.45;
 
 /** Sharpness of the softmax over template scores. */
 const TEMPERATURE = 0.12;
