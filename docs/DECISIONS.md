@@ -626,3 +626,60 @@ say "move closer" would be worse than saying nothing.
 Thresholds are deliberately generous. False nagging is worse than silence, and
 an app that refuses to read a hand it could have read is worse than one that
 occasionally guesses.
+
+## Settings stopped being a wall
+
+Forty-nine controls in one flat scroll. On a 390px phone that is roughly eight
+screens of undifferentiated rows, and the effect of making every setting equally
+available is that every setting is equally hard to find — including the two or
+three that turn a frustrating session into a usable one.
+
+Nothing was deleted. The default *view* was.
+
+**One section open at a time.** Each of the ten groups is now a collapsed row
+carrying its current value: "600 ms dwell · commits at 65%", "Mirrored · hand
+overlay", "Per word · system voice". All ten fit on one phone screen, so the
+panel opens as a contents page you can read at a glance — and often the summary
+is the answer, so you never open the section at all.
+
+**One switch for the rest.** "Show advanced settings", off by default, at the
+bottom of the panel rather than the top: it describes what appears inside the
+sections above it, and leading with it would make the first thing in Settings a
+setting about settings. Behind it go frame rates, inference backends, speech
+pitch, model precision, interim speech results — real settings a few people
+genuinely need, in front of nobody by default. Advanced controls appear below
+the essentials in a marked block, so turning the switch on adds rather than
+rearranges.
+
+**Except one thing, which cannot be folded away.** The first pass put
+"on-device only" inside a collapsed Privacy section, and an E2E test failing was
+what surfaced it. The brief is explicit that this is the single best trust
+feature the app has, and burying the app's strongest claim about itself two taps
+deep is exactly the wrong trade. There is now a permanent line under the header,
+above the accordion: *Everything stays on this device.* The Privacy section
+still holds the controls.
+
+## The control bar measures itself
+
+Captions sat at a fixed 96px from the bottom while the bar above them was any
+height it liked — suggestions and correction chips come and go, and on a narrow
+screen they wrapped to new rows. Picking one offset means wasting video for
+everyone at the tall end and colliding at the short end.
+
+The bar now publishes its height as `--sb-bar-h` through a ResizeObserver and
+the caption band reads it. The chip rows also stopped wrapping: they scroll
+sideways instead, so a fourth suggestion appearing no longer grows the bar by a
+row and moves the buttons out from under the thumb already reaching for them.
+
+## Touch targets, and things that were nearly the same size
+
+Mode chips were 28px tall next to 44px utility buttons in the same row — both
+hard to hit and visibly mismatched. Everything a thumb can hit is now at least
+44px, except in landscape on a phone, where the whole bar compresses because
+380px of height cannot spend a quarter of itself on buttons.
+
+The utility icons were ⚙ ◍ ⏺ — text glyphs, whose font, weight and baseline vary
+enough between platforms that the row looked misaligned on some of them. They
+are SVG now. And the mode labels were "A·B·C", "Signs", "Talk", "Text→ASL": a
+glyph string, a word, a word, and an arrow formula, reading as three different
+kinds of thing inside one switcher. They are four plain words.

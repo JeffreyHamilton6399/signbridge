@@ -40,14 +40,33 @@ test.describe('shell', () => {
     await page.getByRole('button', { name: 'Settings' }).click();
     const dialog = page.getByRole('dialog', { name: 'Settings' });
     await expect(dialog).toBeVisible();
+
+    // Stated without anything having to be expanded first. Settings is an
+    // accordion, and this is the one claim that must not be foldable.
+    await expect(dialog.getByText('Everything stays on this device.')).toBeVisible();
+
+    await dialog.getByRole('button', { name: /^Privacy/ }).click();
     const toggle = dialog.getByRole('switch', { name: 'On-device only' });
     await expect(toggle).toBeChecked();
     await expect(toggle).toBeDisabled();
   });
 
+  test('keeps advanced settings out of the way until asked for', async ({ page }) => {
+    await page.goto('/');
+    await page.getByRole('button', { name: 'Settings' }).click();
+    const dialog = page.getByRole('dialog', { name: 'Settings' });
+
+    // Recognition opens by default; its advanced dials do not.
+    await expect(dialog.getByText('Dwell time to commit')).toBeVisible();
+    await expect(dialog.getByText('Smoothing window')).toHaveCount(0);
+
+    await dialog.getByRole('switch', { name: 'Show advanced settings' }).click();
+    await expect(dialog.getByText('Smoothing window')).toBeVisible();
+  });
+
   test('switches to reverse mode and translates without a camera', async ({ page }) => {
     await page.goto('/');
-    await page.getByRole('button', { name: /Text→ASL/ }).click();
+    await page.getByRole('button', { name: /Reverse/ }).click();
     await page.getByLabel('English').fill('I went to the store yesterday');
     await expect(page.getByText('YESTERDAY', { exact: false }).first()).toBeVisible();
     await expect(page.getByText(/Time is established first/)).toBeVisible();

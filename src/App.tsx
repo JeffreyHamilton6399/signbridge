@@ -39,11 +39,14 @@ export default function App() {
   );
 }
 
+// Short labels are all one plain word. The set used to mix a glyph string
+// (A·B·C), a word (Signs) and an arrow formula (Text→ASL), which read as three
+// different kinds of thing sitting in one switcher.
 const MODES: { id: Mode; label: string; short: string }[] = [
-  { id: 'fingerspell', label: 'Fingerspell', short: 'A·B·C' },
+  { id: 'fingerspell', label: 'Fingerspell', short: 'Letters' },
   { id: 'signs', label: 'Signs', short: 'Signs' },
   { id: 'conversation', label: 'Conversation', short: 'Talk' },
-  { id: 'reverse', label: 'Reverse', short: 'Text→ASL' },
+  { id: 'reverse', label: 'Reverse', short: 'Reverse' },
 ];
 
 function Shell() {
@@ -67,6 +70,7 @@ function Shell() {
   // propped up and looked at from a distance. Tapping the view clears the
   // controls out of the way — the disclaimer stays, because it always does.
   const [immersive, setImmersive] = useState(false);
+  const barRef = useMeasuredHeight('--sb-bar-h');
   // A, S, T, M, N and E are all fists that differ only by an occluded thumb, so
   // the right correction is often not in the top three. Offer the whole cluster.
   // Read reactively: getState() in the render body would freeze on first paint.
@@ -311,9 +315,14 @@ function Shell() {
       {/* Bottom control bar — extreme edge, below the caption band. */}
       {cameraMode && pipeline.active && (
         <div
+          ref={barRef}
           className={`sb-on-video sb-control-bar absolute inset-x-0 bottom-0 z-30 flex flex-col gap-2 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] ${immersive ? 'invisible opacity-0' : 'visible opacity-100'} transition-[opacity,visibility] duration-300`}
         >
-          <div className="flex flex-wrap items-center justify-between gap-2">
+          {/* One line, scrolled sideways if it overflows. Wrapping these made
+              the bar grow by a row every time a fourth suggestion appeared,
+              which pushed the captions up and moved the buttons under the
+              thumb that was already reaching for them. */}
+          <div className="sb-scroll flex items-center gap-2 overflow-x-auto empty:hidden">
             <SuggestionStrip onAccept={fingerspell.acceptSuggestion} />
             <Alternates
               related={mode === 'fingerspell' ? confusionOptions : []}
@@ -327,8 +336,11 @@ function Shell() {
               }}
             />
           </div>
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="min-w-52 flex-1">
+          <div className="flex items-center gap-3">
+            {/* Capped: stretched across a desktop window the bar became a
+                630px hairline, which reads as a progress bar for the page
+                rather than a confidence meter for a letter. */}
+            <div className="min-w-0 flex-1 sm:max-w-sm">
               <ConfidenceBar />
             </div>
             <Controls
@@ -346,7 +358,8 @@ function Shell() {
       {fingerspell.taught && (
         <div
           role="status"
-          className="sb-panel sb-on-video absolute inset-x-3 bottom-[9.5rem] z-40 mx-auto max-w-sm rounded-2xl px-4 py-2.5 text-center text-xs"
+          style={{ bottom: `calc(var(--sb-bar-h, 6rem) + 0.75rem)` }}
+          className="sb-panel sb-on-video absolute inset-x-3 z-40 mx-auto max-w-sm rounded-2xl px-4 py-2.5 text-center text-xs"
         >
           Learned your{' '}
           <span className="font-[family-name:var(--font-display)] font-bold">
@@ -360,7 +373,11 @@ function Shell() {
       {cameraMode && pipeline.active && !immersive && (
         <p
           aria-hidden="true"
-          className="sb-immersive-hint pointer-events-none absolute inset-x-0 top-[6.75rem] z-20 text-center text-[11px] text-white/55 sm:hidden"
+          // Just above the bar it refers to, not floating at the top of the
+          // frame where it landed on the framing guide's caption and read as
+          // one garbled sentence. It fades after a few seconds either way.
+          style={{ bottom: 'calc(var(--sb-bar-h, 6rem) + 0.35rem)' }}
+          className="sb-immersive-hint pointer-events-none absolute inset-x-0 z-20 text-center text-[11px] text-white/55 sm:hidden"
         >
           Tap the view to clear the controls
         </p>
@@ -401,6 +418,38 @@ function Shell() {
 }
 
 /**
+ * Publish an element's height as a CSS custom property on the document root.
+ *
+ * The control bar's height depends on what is in it, and the caption band has
+ * to sit above it. Rather than pick an offset that is wrong in one direction or
+ * the other, the bar measures itself and the captions read the number.
+ */
+function useMeasuredHeight(property: string) {
+  // A callback ref rather than a plain one, so the effect re-runs when the bar
+  // mounts and unmounts — which it does on every camera start and stop.
+  const [el, setEl] = useState<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const root = document.documentElement;
+    if (!el) {
+      // Clear rather than leave a stale height from the last session behind.
+      root.style.removeProperty(property);
+      return;
+    }
+    const publish = () => root.style.setProperty(property, `${el.offsetHeight}px`);
+    publish();
+    const observer = new ResizeObserver(publish);
+    observer.observe(el);
+    return () => {
+      observer.disconnect();
+      root.style.removeProperty(property);
+    };
+  }, [el, property]);
+
+  return setEl;
+}
+
+/**
  * Mode switcher. Rendered twice — as a left rail on wide screens and as a
  * horizontal strip on phones — from one definition, so the two cannot drift.
  */
@@ -430,8 +479,11 @@ function ModeButtons({
             aria-label={`${m.label} — ${m.short}`}
             aria-current={mode === m.id ? 'page' : undefined}
             onClick={() => onPick(m.id)}
-            className={`sb-panel shrink-0 rounded-xl font-semibold transition-colors disabled:opacity-30 ${
-              compact ? 'px-2.5 py-1.5 text-[11px]' : 'w-[4.4rem] px-2 py-2.5 text-[11px]'
+            className={`sb-panel grid shrink-0 place-items-center rounded-xl font-semibold transition-colors disabled:opacity-30 ${
+              // 44px tall on a phone, matching the utility buttons beside them.
+              // They used to be 28px, which is both hard to hit and visibly a
+              // different size from everything in the same row.
+              compact ? 'h-11 px-3 text-xs' : 'h-12 w-[4.6rem] px-2 text-[11px]'
             } ${
               mode === m.id
                 ? 'border-[var(--color-signal)] text-[var(--color-signal)]'
@@ -469,8 +521,11 @@ function UtilityButtons({
   compact?: boolean;
 }) {
   // 44px minimum touch target, per the platform accessibility guidance.
-  const base = `sb-panel shrink-0 rounded-xl font-medium ${
-    compact ? 'grid h-11 w-11 place-items-center text-base' : 'px-3 py-2 text-xs'
+  // Drawn as SVG rather than as ⚙ / ◍ / ⏺: those are text glyphs, and which
+  // font ends up rendering them — and at what weight and baseline — varies
+  // enough between platforms that the row looked misaligned on half of them.
+  const base = `sb-panel grid shrink-0 place-items-center rounded-xl font-medium ${
+    compact ? 'h-11 w-11' : 'h-11 gap-2 px-3 text-xs [grid-auto-flow:column]'
   }`;
   return (
     <>
@@ -480,19 +535,52 @@ function UtilityButtons({
           onClick={onToggleDebug}
           aria-pressed={debugOpen}
           aria-label="Debug"
+          title="Debug (D)"
           className={base}
         >
-          {compact ? '◍' : 'Debug'}
+          <Icon d="M12 3a4 4 0 0 1 4 4v1H8V7a4 4 0 0 1 4-4Zm-6 8h12M5 15h2m10 0h2M6 8h12v5a6 6 0 0 1-12 0V8Z" />
+          {!compact && 'Debug'}
         </button>
       )}
       {showRecord && (
-        <button type="button" onClick={onRecord} aria-label="Record sign" className={base}>
-          {compact ? '⏺' : 'Record sign'}
+        <button
+          type="button"
+          onClick={onRecord}
+          aria-label="Record sign"
+          title="Record sign"
+          className={base}
+        >
+          <Icon d="M12 4a8 8 0 1 0 0 16 8 8 0 0 0 0-16Zm0 4a4 4 0 1 1 0 8 4 4 0 0 1 0-8Z" />
+          {!compact && 'Record sign'}
         </button>
       )}
-      <button type="button" onClick={onSettings} aria-label="Settings" className={base}>
-        {compact ? '⚙' : 'Settings'}
+      <button
+        type="button"
+        onClick={onSettings}
+        aria-label="Settings"
+        title="Settings (,)"
+        className={base}
+      >
+        <Icon d="M12 9.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5Zm7.4 2.5c0 .5-.05.9-.1 1.4l1.7 1.3-1.7 3-2-.8c-.7.6-1.5 1-2.3 1.3l-.3 2.1h-3.4l-.3-2.1c-.8-.3-1.6-.7-2.3-1.3l-2 .8-1.7-3 1.7-1.3a8 8 0 0 1 0-2.8L3 9.3l1.7-3 2 .8c.7-.6 1.5-1 2.3-1.3l.3-2.1h3.4l.3 2.1c.8.3 1.6.7 2.3 1.3l2-.8 1.7 3-1.7 1.3c.05.5.1.9.1 1.4Z" />
+        {!compact && 'Settings'}
       </button>
     </>
+  );
+}
+
+function Icon({ d }: { d: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      className="h-[1.15rem] w-[1.15rem]"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d={d} />
+    </svg>
   );
 }

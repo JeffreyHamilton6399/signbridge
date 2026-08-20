@@ -14,13 +14,13 @@ export function SuggestionStrip({ onAccept }: { onAccept(word: string): void }) 
   if (!enabled || suggestions.length === 0) return null;
 
   return (
-    <div className="flex flex-wrap items-center gap-2" aria-label="Word suggestions">
+    <div className="flex flex-nowrap items-center gap-2" aria-label="Word suggestions">
       {suggestions.map((s) => (
         <button
           key={s.word}
           type="button"
           onClick={() => onAccept(s.word)}
-          className="sb-panel rounded-full px-3 py-1.5 text-sm font-medium transition-colors hover:border-[var(--color-signal)]"
+          className="sb-panel min-h-11 shrink-0 rounded-full px-4 text-sm font-medium whitespace-nowrap transition-colors hover:border-[var(--color-signal)]"
         >
           {s.word}
           {s.corrected && (
@@ -75,7 +75,7 @@ export function Controls(props: ControlsProps) {
   );
 
   return (
-    <div className="relative flex flex-wrap items-center gap-2">
+    <div className="relative flex shrink-0 flex-nowrap items-center gap-2">
       <ControlButton label="Backspace" onClick={props.onBackspace} shortcut="Backspace">
         <PathIcon d="M20 6H9l-5 6 5 6h11a1 1 0 0 0 1-1V7a1 1 0 0 0-1-1Zm-6 3 4 4m0-4-4 4" />
       </ControlButton>
@@ -141,7 +141,10 @@ function ControlButton({
       title={shortcut ? `${label} (${shortcut})` : label}
       aria-keyshortcuts={shortcut}
       aria-expanded={expanded}
-      className={`sb-panel group flex items-center gap-2 rounded-xl px-3 py-2 text-xs font-medium transition-all disabled:opacity-35 ${
+      // min-h-11 keeps every control at the 44px touch target. Icon-only
+      // buttons on a phone were 34px tall, which is small enough to miss with a
+      // thumb while holding a phone up to sign at it.
+      className={`sb-panel group flex min-h-11 min-w-11 items-center justify-center gap-2 rounded-xl px-3 text-xs font-medium transition-all disabled:opacity-35 ${
         destructive ? 'hover:border-[var(--color-alert)]' : 'hover:border-[var(--color-signal)]'
       }`}
     >

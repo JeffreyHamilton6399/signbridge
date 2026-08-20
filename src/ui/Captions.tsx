@@ -34,12 +34,22 @@ export function Captions() {
     display.captionPosition === 'top'
       ? 'top-16 bottom-auto'
       : display.captionPosition === 'side'
-        ? 'top-16 bottom-24 right-0 left-auto w-[min(38ch,42vw)]'
-        : // Clears the control bar; captions must never sit under the buttons.
-          'bottom-24 short:bottom-16 top-auto';
+        ? 'top-16 right-0 left-auto w-[min(38ch,42vw)]'
+        : 'top-auto';
+
+  // Captions must never sit under the control bar, and the bar's height is not
+  // knowable in advance: suggestions and correction chips come and go, and on a
+  // narrow screen they wrap. A fixed offset guessed at the tallest case wastes
+  // video for everyone and still collides when the guess is wrong, so the bar
+  // measures itself and publishes its height (see App.tsx).
+  const clearsBar =
+    display.captionPosition === 'bottom' || display.captionPosition === 'side'
+      ? { bottom: 'calc(var(--sb-bar-h, 6rem) + 0.5rem)' }
+      : undefined;
 
   return (
     <div
+      style={clearsBar}
       className={`sb-on-video pointer-events-none absolute ${display.captionPosition === 'side' ? '' : 'inset-x-0'} ${position} z-20 flex justify-center`}
     >
       <div

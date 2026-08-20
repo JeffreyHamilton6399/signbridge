@@ -44,9 +44,14 @@ export function ConfidenceBar() {
             style={{ width: `${pct}%`, background: color }}
           />
         </div>
-        <div className="mt-1 flex justify-between text-[10px] font-medium tabular-nums text-[var(--sb-fg-muted)]">
-          <span>{pct}% confident</span>
-          <span>commits at {Math.round(threshold * 100)}%</span>
+        <div className="mt-1 flex justify-between gap-2 text-[10px] font-medium tabular-nums text-[var(--sb-fg-muted)]">
+          <span className="truncate">{pct}% confident</span>
+          {/* The threshold is a reference value, not live information. On a
+              phone it competes with the buttons for the same row, and it is a
+              number you set yourself in Settings. */}
+          <span className="hidden shrink-0 sm:inline short:hidden">
+            commits at {Math.round(threshold * 100)}%
+          </span>
         </div>
       </div>
     </div>
@@ -112,7 +117,7 @@ export function Alternates({
   if (options.length === 0) return null;
 
   return (
-    <div className="flex items-center gap-1.5" aria-label="Correct the last letter">
+    <div className="ml-auto flex flex-nowrap items-center gap-1.5" aria-label="Correct the last letter">
       <span className="hidden text-[10px] text-[var(--sb-fg-muted)] sm:inline">Wrong?</span>
       {options.map((option) => (
         <button
@@ -120,7 +125,7 @@ export function Alternates({
           type="button"
           onClick={() => onPick(option.label)}
           title={`Correct to ${option.label}`}
-          className="sb-panel rounded-lg px-2.5 py-1 text-xs font-semibold tabular-nums transition-colors hover:border-[var(--color-signal)]"
+          className="sb-panel min-h-11 min-w-11 shrink-0 rounded-lg px-2.5 text-xs font-semibold tabular-nums transition-colors hover:border-[var(--color-signal)]"
         >
           <span className="font-[family-name:var(--font-display)] text-sm">{option.label}</span>
           {option.confidence !== null && (
