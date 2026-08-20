@@ -34,6 +34,45 @@ export type FrameSource = ImageBitmap | HTMLVideoElement | HTMLCanvasElement | O
 export type CanvasLike = HTMLCanvasElement | OffscreenCanvas;
 
 /**
+ * Resolution inference actually runs at.
+ *
+ * The camera is opened at 720p because that is what looks good on screen, but
+ * feeding 921,600 pixels to a hand detector is waste: MediaPipe's hand model
+ * works at 192x192 internally, and every pixel above that is spent on the copy
+ * and the texture upload, not on accuracy. Downscaling first is the single
+ * largest performance lever in the pipeline, and it costs nothing visible —
+ * landmarks come back in normalized 0..1 coordinates, so they map onto the
+ * full-resolution video exactly as before.
+ *
+ * Pose gets more, because it needs the whole torso in frame and its landmarks
+ * are spread over a much larger area.
+ */
+export const PROCESSING_WIDTH_HANDS = 480;
+export const PROCESSING_WIDTH_WITH_POSE = 640;
+
+export interface ProcessingSize {
+  width: number;
+  height: number;
+}
+
+/** Target size for inference, preserving aspect ratio. Never upscales. */
+export function processingSize(
+  sourceWidth: number,
+  sourceHeight: number,
+  maxWidth: number,
+): ProcessingSize {
+  if (sourceWidth <= maxWidth || sourceWidth === 0) {
+    return { width: sourceWidth, height: sourceHeight };
+  }
+  const scale = maxWidth / sourceWidth;
+  return {
+    width: maxWidth,
+    // Even dimensions avoid chroma-subsampling artefacts on some decoders.
+    height: Math.max(2, Math.round((sourceHeight * scale) / 2) * 2),
+  };
+}
+
+/**
  * Assets are vendored into /public by `npm run fetch:models` so the app never
  * touches a CDN at runtime. If that step did not run, fall back rather than
  * shipping a broken camera — offline mode is lost, which is why it is a
@@ -56,6 +95,26 @@ async function resolveAsset(local: string, fallback: string): Promise<string> {
   return fallback;
 }
 
+/**
+ * The WASM fileset, resolved once per thread.
+ *
+ * Instantiating a second one is what produced "ModuleFactory not set" on Safari
+ * when switching into Signs mode: enabling pose used to tear the landmarker
+ * down and rebuild it from scratch, fileset included. Safari does not survive
+ * that. It is cached here so it can only ever be built once, and
+ * {@link Landmarker.update} changes options in place instead of rebuilding.
+ */
+let filesetPromise: Promise<Awaited<ReturnType<typeof FilesetResolver.forVisionTasks>>> | null =
+  null;
+
+async function fileset(
+  wasmPath: string,
+  useModule: boolean,
+): Promise<Awaited<ReturnType<typeof FilesetResolver.forVisionTasks>>> {
+  filesetPromise ??= FilesetResolver.forVisionTasks(wasmPath, useModule);
+  return filesetPromise;
+}
+
 function toPoints(landmarks: { x: number; y: number; z: number }[]): Point3[] {
   return landmarks.map((p) => ({ x: p.x, y: p.y, z: p.z }));
 }
@@ -70,17 +129,30 @@ export class Landmarker {
   private pose: PoseLandmarker | null;
   /** MediaPipe requires strictly increasing timestamps in VIDEO mode. */
   private lastTimestamp = -1;
+  /** Kept so pose can be added later without rebuilding anything. */
+  private context: {
+    wasmPath: string;
+    useModule: boolean;
+    canvas: CanvasLike;
+    poseModelPath: string;
+  };
 
   readonly delegate: 'GPU' | 'CPU';
 
-  private constructor(hand: HandLandmarker, pose: PoseLandmarker | null, delegate: 'GPU' | 'CPU') {
+  private constructor(
+    hand: HandLandmarker,
+    pose: PoseLandmarker | null,
+    delegate: 'GPU' | 'CPU',
+    context: Landmarker['context'],
+  ) {
     this.hand = hand;
     this.pose = pose;
     this.delegate = delegate;
+    this.context = context;
   }
 
   get poseEnabled(): boolean {
-    return this.pose !== null;
+    return this.pose !== null && !this.poseIdle;
   }
 
   /**
@@ -96,13 +168,13 @@ export class Landmarker {
   ): Promise<Landmarker> {
     const localWasm = `${opts.wasmPath}/vision_wasm_internal.js`;
     const wasmPath = (await resolveAsset(localWasm, '')) === localWasm ? opts.wasmPath : CDN_ROOT;
-    const fileset = await FilesetResolver.forVisionTasks(wasmPath, useModule);
+    const resolved = await fileset(wasmPath, useModule);
 
     const handModelPath = await resolveAsset(opts.handModelPath, CDN_MODELS.hand);
     const poseModelPath = await resolveAsset(opts.poseModelPath, CDN_MODELS.pose);
 
     const makeHand = (delegate: 'GPU' | 'CPU') =>
-      HandLandmarker.createFromOptions(fileset, {
+      HandLandmarker.createFromOptions(resolved, {
         baseOptions: { modelAssetPath: handModelPath, delegate },
         canvas,
         runningMode: 'VIDEO',
@@ -132,7 +204,7 @@ export class Landmarker {
     let pose: PoseLandmarker | null = null;
     if (opts.trackPose) {
       try {
-        pose = await PoseLandmarker.createFromOptions(fileset, {
+        pose = await PoseLandmarker.createFromOptions(resolved, {
           baseOptions: { modelAssetPath: poseModelPath, delegate },
           canvas,
           runningMode: 'VIDEO',
@@ -147,8 +219,56 @@ export class Landmarker {
       }
     }
 
-    return new Landmarker(hand, pose, delegate);
+    return new Landmarker(hand, pose, delegate, {
+      wasmPath,
+      useModule,
+      canvas,
+      poseModelPath,
+    });
   }
+
+  /**
+   * Change options in place.
+   *
+   * Never rebuilds: enabling pose creates only the pose landmarker, reusing the
+   * cached fileset, and hand-tracking options go through setOptions. Rebuilding
+   * is what broke Safari, and it also dropped a frame of tracking state every
+   * time the user switched mode.
+   */
+  async update(opts: VisionInitOptions): Promise<void> {
+    await this.hand.setOptions({
+      numHands: opts.numHands,
+      minHandDetectionConfidence: opts.minHandDetectionConfidence,
+      minHandPresenceConfidence: opts.minHandDetectionConfidence,
+      minTrackingConfidence: opts.minTrackingConfidence,
+    });
+
+    if (opts.trackPose && !this.pose) {
+      try {
+        const resolved = await fileset(this.context.wasmPath, this.context.useModule);
+        this.pose = await PoseLandmarker.createFromOptions(resolved, {
+          baseOptions: { modelAssetPath: this.context.poseModelPath, delegate: this.delegate },
+          canvas: this.context.canvas,
+          runningMode: 'VIDEO',
+          numPoses: 1,
+          outputSegmentationMasks: false,
+        });
+      } catch (err) {
+        // Pose is optional. Sign mode degrades to hands-only rather than
+        // taking the whole pipeline down with it.
+        console.warn('Pose landmarker unavailable:', err);
+        this.pose = null;
+      }
+    } else if (!opts.trackPose && this.pose) {
+      // Keep it built but idle: closing and recreating is the expensive,
+      // fragile path this method exists to avoid.
+      this.poseIdle = true;
+    }
+    if (opts.trackPose) this.poseIdle = false;
+  }
+
+  /** Pose stays constructed but unused when a mode does not need it. */
+  private poseIdle = false;
 
   detect(source: FrameSource, t: number, width: number, height: number): LandmarkerResult {
     const started = performance.now();
@@ -156,7 +276,8 @@ export class Landmarker {
     this.lastTimestamp = timestamp;
 
     const handResult = this.hand.detectForVideo(source as never, timestamp);
-    const poseResult = this.pose ? this.pose.detectForVideo(source as never, timestamp) : null;
+    const poseResult =
+      this.pose && !this.poseIdle ? this.pose.detectForVideo(source as never, timestamp) : null;
 
     const frame: VisionFrame = {
       t,

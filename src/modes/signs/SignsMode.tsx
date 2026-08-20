@@ -118,7 +118,7 @@ export function SignsMode({ recorderOpen, onCloseRecorder }: { recorderOpen: boo
 
   return (
     <>
-      <div className="pointer-events-none absolute top-16 left-3 z-30 max-w-xs">
+      <div className="pointer-events-none absolute top-28 left-3 z-30 hidden max-w-xs sm:block">
         <div className="sb-panel sb-on-video rounded-2xl p-3 text-xs">
           <p className="font-semibold">
             {BUILT_IN_GLOSSES.length} built-in signs
@@ -163,7 +163,7 @@ function SignReference() {
   const [open, setOpen] = useState(false);
 
   return (
-    <div className="absolute right-3 bottom-32 z-30 max-w-sm">
+    <div className="absolute right-2 bottom-32 z-30 max-w-[min(22rem,calc(100vw-1rem))]">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}

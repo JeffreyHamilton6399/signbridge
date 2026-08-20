@@ -183,66 +183,68 @@ function Shell() {
         </>
       )}
 
-      <div className={`absolute inset-x-0 top-0 z-40 ${cameraMode && pipeline.active ? 'sb-on-video' : ''}`}>
+      {/* Top chrome. On a phone the disclaimer, the mode switcher and the
+          utilities stack into one column: laying them out as separate absolutely
+          positioned elements made them overlap on a 390px screen. On wider
+          screens the mode switcher moves to a rail down the left edge, out of
+          the centre of frame where hands are. */}
+      <div
+        className={`absolute inset-x-0 top-0 z-40 flex flex-col gap-1.5 px-2 pt-[env(safe-area-inset-top)] ${
+          cameraMode && pipeline.active ? 'sb-on-video' : ''
+        }`}
+      >
         <Disclaimer />
+        <div className="flex items-center gap-1.5 sm:hidden">
+          <nav aria-label="Mode" className="sb-scroll flex gap-1 overflow-x-auto">
+            <ModeButtons
+              mode={mode}
+              conversationEnabled={settings.experimental.conversationMode}
+              onPick={(id) => patch({ recognition: { mode: id } })}
+              compact
+            />
+          </nav>
+          <div className="ml-auto flex shrink-0 gap-1">
+            <UtilityButtons
+              compact
+              showDebug={cameraMode && pipeline.active}
+              showRecord={mode === 'signs'}
+              debugOpen={debugOpen}
+              onToggleDebug={() => setDebugOpen((v) => !v)}
+              onRecord={() => setSignRecorderOpen(true)}
+              onSettings={() => setSettingsOpen(true)}
+            />
+          </div>
+        </div>
       </div>
 
-      {/* Mode rail — extreme left edge, out of the frame's centre. */}
+      {/* Mode rail — wide screens only, at the extreme left edge. */}
       <nav
         aria-label="Mode"
-        className={`absolute top-1/2 left-2 z-30 flex -translate-y-1/2 flex-col gap-1.5 ${cameraMode && pipeline.active ? 'sb-on-video' : ''}`}
+        className={`absolute top-1/2 left-2 z-30 hidden -translate-y-1/2 flex-col gap-1.5 sm:flex ${
+          cameraMode && pipeline.active ? 'sb-on-video' : ''
+        }`}
       >
-        {MODES.map((m) => {
-          const disabled = m.id === 'conversation' && !settings.experimental.conversationMode;
-          return (
-            <button
-              key={m.id}
-              type="button"
-              disabled={disabled}
-              title={disabled ? 'Enable Conversation mode in Settings > Experimental' : m.label}
-              aria-current={mode === m.id ? 'page' : undefined}
-              onClick={() => patch({ recognition: { mode: m.id } })}
-              className={`sb-panel w-[4.4rem] rounded-xl px-2 py-2.5 text-[11px] font-semibold transition-colors disabled:opacity-30 ${
-                mode === m.id
-                  ? 'border-[var(--color-signal)] text-[var(--color-signal)]'
-                  : 'text-[var(--sb-fg-muted)] hover:text-[var(--sb-fg)]'
-              }`}
-            >
-              {m.short}
-            </button>
-          );
-        })}
+        <ModeButtons
+          mode={mode}
+          conversationEnabled={settings.experimental.conversationMode}
+          onPick={(id) => patch({ recognition: { mode: id } })}
+        />
       </nav>
 
-      {/* Top-right utilities. */}
-      <div className={`absolute top-3 right-3 z-40 flex gap-1.5 pt-[env(safe-area-inset-top)] ${cameraMode && pipeline.active ? 'sb-on-video' : ''}`}>
-        {cameraMode && pipeline.active && (
-          <button
-            type="button"
-            onClick={() => setDebugOpen((v) => !v)}
-            aria-pressed={debugOpen}
-            className="sb-panel rounded-xl px-3 py-2 text-xs font-medium"
-          >
-            Debug
-          </button>
-        )}
-        {mode === 'signs' && (
-          <button
-            type="button"
-            onClick={() => setSignRecorderOpen(true)}
-            className="sb-panel rounded-xl px-3 py-2 text-xs font-medium"
-          >
-            Record sign
-          </button>
-        )}
-        <button
-          type="button"
-          onClick={() => setSettingsOpen(true)}
-          aria-label="Settings"
-          className="sb-panel rounded-xl px-3 py-2 text-xs font-medium"
-        >
-          Settings
-        </button>
+      {/* Top-right utilities — wide screens only. */}
+      <div
+        className={`absolute top-3 right-3 z-40 hidden gap-1.5 pt-[env(safe-area-inset-top)] sm:flex ${
+          cameraMode && pipeline.active ? 'sb-on-video' : ''
+        }`}
+      >
+        <UtilityButtons
+          showDebug={cameraMode && pipeline.active}
+          showRecord={mode === 'signs'}
+          debugOpen={debugOpen}
+          onToggleDebug={() => setDebugOpen((v) => !v)}
+          onRecord={() => setSignRecorderOpen(true)}
+          onSettings={() => setSettingsOpen(true)}
+        />
       </div>
 
       {/* Main area. */}
@@ -334,5 +336,102 @@ function Shell() {
         onFinished={() => void fingerspell.reloadCalibration()}
       />
     </div>
+  );
+}
+
+/**
+ * Mode switcher. Rendered twice — as a left rail on wide screens and as a
+ * horizontal strip on phones — from one definition, so the two cannot drift.
+ */
+function ModeButtons({
+  mode,
+  conversationEnabled,
+  onPick,
+  compact = false,
+}: {
+  mode: Mode;
+  conversationEnabled: boolean;
+  onPick(id: Mode): void;
+  compact?: boolean;
+}) {
+  return (
+    <>
+      {MODES.map((m) => {
+        const disabled = m.id === 'conversation' && !conversationEnabled;
+        return (
+          <button
+            key={m.id}
+            type="button"
+            disabled={disabled}
+            title={disabled ? 'Enable Conversation mode in Settings > Experimental' : m.label}
+            // WCAG 2.5.3: the accessible name must contain the visible label,
+            // so a voice-control user saying what they see actually works.
+            aria-label={`${m.label} — ${m.short}`}
+            aria-current={mode === m.id ? 'page' : undefined}
+            onClick={() => onPick(m.id)}
+            className={`sb-panel shrink-0 rounded-xl font-semibold transition-colors disabled:opacity-30 ${
+              compact ? 'px-2.5 py-1.5 text-[11px]' : 'w-[4.4rem] px-2 py-2.5 text-[11px]'
+            } ${
+              mode === m.id
+                ? 'border-[var(--color-signal)] text-[var(--color-signal)]'
+                : 'text-[var(--sb-fg-muted)] hover:text-[var(--sb-fg)]'
+            }`}
+          >
+            {m.short}
+          </button>
+        );
+      })}
+    </>
+  );
+}
+
+/**
+ * Debug / record / settings. On phones these collapse to icons — three text
+ * buttons plus four mode chips do not fit across 390px, and shrinking the text
+ * until it does makes every one of them unreadable.
+ */
+function UtilityButtons({
+  showDebug,
+  showRecord,
+  debugOpen,
+  onToggleDebug,
+  onRecord,
+  onSettings,
+  compact = false,
+}: {
+  showDebug: boolean;
+  showRecord: boolean;
+  debugOpen: boolean;
+  onToggleDebug(): void;
+  onRecord(): void;
+  onSettings(): void;
+  compact?: boolean;
+}) {
+  // 44px minimum touch target, per the platform accessibility guidance.
+  const base = `sb-panel shrink-0 rounded-xl font-medium ${
+    compact ? 'grid h-11 w-11 place-items-center text-base' : 'px-3 py-2 text-xs'
+  }`;
+  return (
+    <>
+      {showDebug && (
+        <button
+          type="button"
+          onClick={onToggleDebug}
+          aria-pressed={debugOpen}
+          aria-label="Debug"
+          className={base}
+        >
+          {compact ? '◍' : 'Debug'}
+        </button>
+      )}
+      {showRecord && (
+        <button type="button" onClick={onRecord} aria-label="Record sign" className={base}>
+          {compact ? '⏺' : 'Record sign'}
+        </button>
+      )}
+      <button type="button" onClick={onSettings} aria-label="Settings" className={base}>
+        {compact ? '⚙' : 'Settings'}
+      </button>
+    </>
   );
 }

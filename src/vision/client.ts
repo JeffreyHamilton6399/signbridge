@@ -17,7 +17,12 @@
  * landmark the same decoded frame twice, and falls back to rAF elsewhere.
  */
 import { InlineLandmarker } from './inlineLandmarker';
-import { workerCanHostVision } from './landmarkerCore';
+import {
+  PROCESSING_WIDTH_HANDS,
+  PROCESSING_WIDTH_WITH_POSE,
+  processingSize,
+  workerCanHostVision,
+} from './landmarkerCore';
 import type { VisionInitOptions, VisionRequest, VisionResponse } from './protocol';
 import type { VisionFrame } from './types';
 
@@ -52,6 +57,22 @@ type VideoFrameCapable = HTMLVideoElement & {
 /** Inline landmarking competes with rendering, so it gets a lower ceiling. */
 const INLINE_MAX_FPS = 20;
 
+/**
+ * Smoothing factor for the measured inference cost. Low enough that one slow
+ * frame does not collapse the frame rate, high enough to react within a second.
+ */
+const COST_SMOOTHING = 0.2;
+
+/**
+ * Headroom over measured inference time.
+ *
+ * Requesting frames faster than they can be processed does not produce more
+ * captions — the extra frames are dropped, having already cost a copy — and it
+ * grows the gap between what the camera shows and what the overlay draws. Asking
+ * only slightly faster than we can answer keeps that gap small.
+ */
+const PACING_HEADROOM = 1.15;
+
 export class VisionClient {
   private worker: Worker | null = null;
   private inline: InlineLandmarker | null = null;
@@ -64,6 +85,10 @@ export class VisionClient {
   private events: VisionClientEvents;
   private options: VisionInitOptions = DEFAULT_VISION_OPTIONS;
   private ready = false;
+  /** Exponential moving average of inference cost, ms. */
+  private costMs = 0;
+  /** Whether createImageBitmap accepts the resize options bag here. */
+  private canResizeBitmap = true;
 
   mode: VisionMode = 'worker';
 
@@ -107,7 +132,12 @@ export class VisionClient {
    * gets reported.
    */
   private async fallbackToInline(reason: string): Promise<void> {
-    if (this.mode === 'inline' || !this.running) return;
+    if (!this.running) return;
+    if (this.mode === 'inline') {
+      // Already on the main thread, so this failure is real.
+      this.events.onError?.(describeVisionError(reason), true);
+      return;
+    }
     console.warn(`Vision worker unusable (${reason}); retrying on the main thread.`);
 
     this.worker?.terminate();
@@ -119,7 +149,7 @@ export class VisionClient {
     this.mode = 'inline';
     this.inline = new InlineLandmarker();
     try {
-      const { delegate, poseEnabled } = await this.inline.init(this.options);
+      const { delegate, poseEnabled } = await this.inline.init(this.options, this.processingWidth);
       this.ready = true;
       this.events.onReady?.(delegate, poseEnabled, 'inline');
     } catch (err) {
@@ -132,7 +162,7 @@ export class VisionClient {
     if (this.mode === 'worker') {
       this.send({ type: 'configure', options });
     } else if (this.inline) {
-      void this.inline.init(this.options).catch((err) => {
+      void this.inline.init(this.options, this.processingWidth).catch((err) => {
         this.events.onError?.(describeVisionError(err), true);
       });
     }
@@ -142,14 +172,37 @@ export class VisionClient {
     this.targetFps = Math.max(5, Math.min(60, fps));
   }
 
-  /** Effective capture rate, after the inline ceiling. */
+  private noteCost(ms: number): void {
+    this.costMs = this.costMs === 0 ? ms : this.costMs * (1 - COST_SMOOTHING) + ms * COST_SMOOTHING;
+  }
+
+  /** Width inference runs at. Pose needs more of the body in frame than hands do. */
+  private get processingWidth(): number {
+    return this.options.trackPose ? PROCESSING_WIDTH_WITH_POSE : PROCESSING_WIDTH_HANDS;
+  }
+
+  /**
+   * Capture rate, after the inline ceiling and after backing off to whatever
+   * this device can actually sustain.
+   */
   private get effectiveFps(): number {
-    return this.mode === 'inline' ? Math.min(this.targetFps, INLINE_MAX_FPS) : this.targetFps;
+    const ceiling = this.mode === 'inline' ? Math.min(this.targetFps, INLINE_MAX_FPS) : this.targetFps;
+    if (this.costMs <= 0) return ceiling;
+    const sustainable = 1000 / (this.costMs * PACING_HEADROOM);
+    // Never fall below 8fps: past that the dwell timer stops feeling responsive
+    // and it is better to drop frames than to stop tracking.
+    return Math.max(8, Math.min(ceiling, sustainable));
+  }
+
+  /** What the capture loop is currently pacing itself to, for the debug panel. */
+  get pacingFps(): number {
+    return this.effectiveFps;
   }
 
   stop(): void {
     this.running = false;
     this.ready = false;
+    this.costMs = 0;
     if (this.rafHandle !== null) cancelAnimationFrame(this.rafHandle);
     if (this.vfcHandle !== null && this.video?.cancelVideoFrameCallback) {
       this.video.cancelVideoFrameCallback(this.vfcHandle);
@@ -166,8 +219,37 @@ export class VisionClient {
     this.video = null;
   }
 
-  private send(msg: VisionRequest, transfer: Transferable[] = []): void {
-    this.worker?.postMessage(msg, transfer);
+  private send(msg: VisionRequest): void {
+    // Frames carry an ImageBitmap, which must be transferred rather than
+    // structured-cloned — cloning a bitmap copies every pixel.
+    this.worker?.postMessage(msg, msg.type === 'frame' ? [msg.bitmap] : []);
+  }
+
+  /**
+   * Grab a frame at inference resolution.
+   *
+   * The resize options bag is not universally supported; where it is missing,
+   * fall back to a full-size grab rather than failing the frame.
+   */
+  private async grab(video: HTMLVideoElement): Promise<ImageBitmap> {
+    const { width, height } = processingSize(
+      video.videoWidth,
+      video.videoHeight,
+      this.processingWidth,
+    );
+
+    if (this.canResizeBitmap && width !== video.videoWidth) {
+      try {
+        return await createImageBitmap(video, {
+          resizeWidth: width,
+          resizeHeight: height,
+          resizeQuality: 'low',
+        });
+      } catch {
+        this.canResizeBitmap = false;
+      }
+    }
+    return createImageBitmap(video);
   }
 
   private handle(msg: VisionResponse): void {
@@ -177,14 +259,16 @@ export class VisionClient {
         this.events.onReady?.(msg.delegate, msg.poseEnabled, 'worker');
         break;
       case 'result':
+        this.noteCost(msg.inferenceMs);
         this.events.onFrame(msg.frame, msg.inferenceMs);
         break;
       case 'error':
         if (msg.fatal) {
-          // A fatal worker error before it ever became ready is exactly the
-          // Safari-in-a-worker case; try the main thread before giving up.
-          if (!this.ready) void this.fallbackToInline(msg.message);
-          else this.events.onError?.(describeVisionError(msg.message), true);
+          // Any fatal worker error is worth retrying on the main thread, not
+          // just one during startup: a worker that dies when the user switches
+          // mode leaves them with a dead camera otherwise. fallbackToInline is
+          // idempotent, so a repeat failure surfaces instead of looping.
+          void this.fallbackToInline(msg.message);
         } else {
           console.warn('Vision worker:', msg.message);
         }
@@ -217,15 +301,18 @@ export class VisionClient {
     this.lastCapture = now;
 
     if (this.mode === 'inline') {
-      // No thread boundary, so the video element goes straight in — no copy.
+      // No thread boundary; InlineLandmarker does its own downscale.
+      this.inline?.setMaxWidth(this.processingWidth);
       const result = this.inline?.detect(video, now);
-      if (result) this.events.onFrame(result.frame, result.inferenceMs);
+      if (result) {
+        this.noteCost(result.inferenceMs);
+        this.events.onFrame(result.frame, result.inferenceMs);
+      }
       return;
     }
 
     try {
-      const bitmap = await createImageBitmap(video);
-      this.send({ type: 'frame', bitmap, t: now }, [bitmap]);
+      this.send({ type: 'frame', bitmap: await this.grab(video), t: now });
     } catch {
       // A frame can vanish mid-grab when the track ends. Not worth surfacing.
     }

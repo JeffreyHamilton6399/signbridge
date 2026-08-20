@@ -9,16 +9,17 @@
  */
 export function Disclaimer() {
   return (
-    <div
-      role="note"
-      className="pointer-events-none z-40 flex w-full justify-center px-3 pt-[env(safe-area-inset-top)]"
-    >
-      <p className="sb-panel mt-2 rounded-full px-4 py-1.5 text-center text-[11px] leading-snug font-medium tracking-wide sm:text-xs">
+    <div role="note" className="pointer-events-none z-40 flex w-full justify-center">
+      <p className="sb-panel mt-2 rounded-full px-3 py-1.5 text-center text-[10.5px] leading-snug font-medium tracking-wide sm:px-4 sm:text-xs">
         <span className="text-[var(--color-signal)]">Recognition assistant, not an interpreter.</span>{' '}
-        <span className="text-[var(--sb-fg-muted)]">
+        {/* The full sentence needs three lines on a phone, which is most of the
+            screen. The part that must never be dropped stays; the rest is one
+            tap away in Settings > About. */}
+        <span className="hidden text-[var(--sb-fg-muted)] sm:inline">
           Do not rely on it for medical, legal, emergency, financial or educational-access
           conversations.
         </span>
+        <span className="text-[var(--sb-fg-muted)] sm:hidden">Not for medical or legal use.</span>
       </p>
     </div>
   );

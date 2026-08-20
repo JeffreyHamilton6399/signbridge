@@ -68,9 +68,23 @@ ctx.onmessage = async (event: MessageEvent<VisionRequest>) => {
       case 'init':
         await build(msg.options);
         break;
-      case 'configure':
-        if (options) await build({ ...options, ...msg.options });
+      case 'configure': {
+        if (!options) break;
+        options = { ...options, ...msg.options };
+        if (landmarker) {
+          // In place. Rebuilding here is what produced "ModuleFactory not set"
+          // on Safari when the user switched into Signs mode.
+          await landmarker.update(options);
+          post({
+            type: 'ready',
+            delegate: landmarker.delegate,
+            poseEnabled: landmarker.poseEnabled,
+          });
+        } else {
+          await build(options);
+        }
         break;
+      }
       case 'frame':
         process(msg.bitmap, msg.t);
         break;

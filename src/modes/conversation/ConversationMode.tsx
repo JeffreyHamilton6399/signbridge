@@ -29,7 +29,7 @@ export function ConversationMode() {
   const english = glossToEnglish(tokens.map((t) => ({ gloss: t.text, confidence: t.confidence })));
 
   return (
-    <div className="sb-scroll h-full overflow-y-auto px-4 pt-16 pb-32">
+    <div className="sb-scroll h-full overflow-y-auto px-4 pt-28 pb-32 sm:pt-16">
       <div className="mx-auto w-full max-w-3xl">
         <header className="flex flex-wrap items-baseline justify-between gap-2">
           <h1 className="font-[family-name:var(--font-display)] text-3xl font-bold">Conversation</h1>

@@ -231,3 +231,69 @@ Now:
 
 Lesson worth keeping: an offline cache is a way to ship a permanent bug. Any
 update path has to be visible, testable, and have a manual override.
+
+## Lag, desync, and "ModuleFactory not set" on switching mode
+
+Three separate reports from one device, three different causes.
+
+### "Hand tracking could not start: ModuleFactory not set" when opening Signs
+
+Signs mode needs pose, so switching to it called `reconfigure({trackPose: true})`,
+and the worker's `configure` handler rebuilt the landmarker from scratch —
+including a second `FilesetResolver.forVisionTasks()`. Safari does not survive a
+second WASM instance in the same worker.
+
+The fileset is now created once per thread and cached, and `Landmarker.update()`
+changes options in place: `setOptions()` for the hand model, and pose created
+lazily the first time it is needed and then kept. Nothing is ever torn down to
+change a setting. This also stopped mode switches dropping a frame of tracking
+state.
+
+The fallback to the main thread now fires on *any* fatal worker error, not only
+one during startup. A worker that dies when the user switches mode previously
+left them with a dead camera and an error message.
+
+### Laggy
+
+Inference was being fed full 720p frames. MediaPipe's hand model works at
+192x192 internally, so every pixel above that was spent on the copy and the
+texture upload rather than on accuracy. Frames are now downscaled to 480px wide
+(640 with pose) before inference — landmarks come back normalized, so they still
+map onto the full-resolution video exactly. This is the single largest lever in
+the pipeline.
+
+The capture loop also paces itself to measured inference cost now. Requesting
+frames faster than they can be processed produces no extra captions — the extras
+are dropped having already cost a copy — and widens the gap between what the
+camera shows and what the overlay draws.
+
+### Out of sync
+
+Distinct from lag, and it survives any frame rate. A landmark frame describes
+where the hand was when it was *captured*, one inference ago; the video shows
+now. Drawing the raw positions paints the skeleton where the hand used to be.
+
+The overlay now redraws on every animation frame rather than on every landmark
+frame — landmarks arrive at 15-30fps, the display refreshes at 60 — and
+extrapolates each landmark along its measured velocity to where it should be
+*now*. Capped at 120ms and damped to 0.75, because extrapolation amplifies noise
+and a skeleton that overshoots is worse than one slightly behind.
+
+## Mobile
+
+The layout was designed at desktop width and had never been looked at on a
+phone. On a 390px screen the disclaimer ran under the Debug and Settings
+buttons, the mode rail occupied a third of the height, captions were set in
+fixed 56px type, and the Signs and Debug panels covered the camera.
+
+- Top chrome is one flex column on phones — disclaimer, then a row of mode chips
+  with icon-only utilities. The left rail and the top-right buttons return at
+  `sm`. Both are rendered from one `ModeButtons`/`UtilityButtons` definition so
+  the two layouts cannot drift.
+- Captions use `min(size, 9vw)`. A fixed pixel size is a desktop assumption.
+- The disclaimer keeps the non-negotiable half on narrow screens and drops the
+  enumeration, which needed three lines; the full text is in Settings > About.
+- Icon-only buttons get 44px touch targets.
+- The mode buttons' `aria-label` includes the visible text (`Reverse — Text→ASL`)
+  rather than replacing it — the WCAG 2.5.3 failure fixed once already in
+  Settings and immediately reintroduced here.

@@ -47,7 +47,7 @@ test.describe('shell', () => {
 
   test('switches to reverse mode and translates without a camera', async ({ page }) => {
     await page.goto('/');
-    await page.getByRole('button', { name: 'Text→ASL' }).click();
+    await page.getByRole('button', { name: /Text→ASL/ }).click();
     await page.getByLabel('English').fill('I went to the store yesterday');
     await expect(page.getByText('YESTERDAY', { exact: false }).first()).toBeVisible();
     await expect(page.getByText(/Time is established first/)).toBeVisible();

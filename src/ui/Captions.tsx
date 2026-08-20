@@ -44,7 +44,7 @@ export function Captions() {
     >
       <div
         ref={scrollRef}
-        className="sb-scroll max-h-[38vh] w-full max-w-5xl overflow-y-auto px-5 pb-2"
+        className="sb-scroll max-h-[38vh] w-full max-w-5xl overflow-y-auto px-3 pb-2 sm:px-5"
         aria-live="polite"
         aria-atomic="false"
         aria-label="Recognised text"
@@ -52,7 +52,9 @@ export function Captions() {
         <p
           className="text-balance leading-[1.12] font-[family-name:var(--font-display)]"
           style={{
-            fontSize: `${size}px`,
+            // Scale with the viewport, never exceeding the chosen size. Without
+            // this, "Large" captions are unreadable on a phone.
+            fontSize: `min(${size}px, 9vw)`,
             textShadow: 'var(--sb-caption-shadow)',
           }}
         >

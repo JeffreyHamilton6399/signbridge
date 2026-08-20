@@ -47,7 +47,7 @@ export function DebugPanel({
   const budgetOk = latencyMs < 150;
 
   return (
-    <aside className="sb-on-video sb-panel absolute top-16 right-3 bottom-28 z-30 w-72 overflow-y-auto rounded-[var(--radius-panel)] p-4 text-xs">
+    <aside className="sb-on-video sb-panel absolute top-28 right-2 bottom-28 left-2 z-30 overflow-y-auto rounded-[var(--radius-panel)] p-4 text-xs sm:top-16 sm:right-3 sm:left-auto sm:w-72">
       <div className="flex items-center justify-between">
         <h2 className="font-[family-name:var(--font-display)] text-base font-bold">Debug</h2>
         <button type="button" onClick={onClose} aria-label="Close debug panel" className="text-[var(--sb-fg-muted)]">
