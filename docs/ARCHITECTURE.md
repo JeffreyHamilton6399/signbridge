@@ -27,7 +27,10 @@ Web Worker  ── MediaPipe HandLandmarker (+ PoseLandmarker when needed)
    │            never asked for a frame while it is busy
    │  21 image points + 21 world points × 2 hands · 33 pose points
    ▼
-smoothing.ts   1€ filter per landmark channel
+tracking.ts    match hands to the previous frame by wrist position
+   │           stable id · handedness as an accumulated verdict
+   ▼
+smoothing.ts   1€ filter per landmark channel, keyed on that id
    │           still hand → filtered hard · moving hand → barely filtered
    ▼
 normalize.ts   aspect-correct → mirror left→right → wrist to origin
@@ -139,6 +142,31 @@ exposes one entry point, `geometryOf()`, which resolves the split:
 `geometryOf()` falls back to image space when world landmarks are absent, which
 keeps recorded fixtures and hand-built test frames working unchanged. The debug
 panel reports which space is live.
+
+## Hand identity
+
+MediaPipe reports each frame independently: it does not promise that hand 0 this
+frame is hand 0 last frame, nor that its Left/Right label is the same. Both
+change in practice. `vision/tracking.ts` assigns a stable `id` by matching
+wrists to the previous frame, and reports handedness as an accumulated verdict
+rather than this frame's guess.
+
+**Anything holding per-hand state across time must key on `id`** — the 1€ filter,
+the overlay's velocity estimate, the scan-quality speed tracker all do. Keying
+on the handedness label means discarding that state every time a label flips.
+
+## Refusing to guess
+
+`features/scanQuality.ts` measures the *input*: hand span against frame height,
+landmarks outside the frame, wrist speed in hand spans per second, how edge-on
+the palm is. It never reads the classifier's output — a check that consults the
+answer it is checking is not a check.
+
+When the view is unusable, fingerspelling feeds the committer a null label:
+nothing commits, no auto-space fires (the hand is up, it just cannot be read),
+and the framing guide says why. **This path can only withhold.** Nothing in it
+raises a confidence or forces a commit, and `tests/scanQuality.test.ts` pins
+that.
 
 ## Repository layout
 

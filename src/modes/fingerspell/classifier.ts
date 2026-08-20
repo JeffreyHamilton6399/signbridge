@@ -33,6 +33,8 @@ export interface LetterPrediction {
   distribution: Record<string, number>;
   /** The 63-float vector this prediction was made from, for calibration capture. */
   features: Float32Array;
+  /** The interpretable geometry behind it — reused so callers need not recompute. */
+  geometry: HandGeometry;
 }
 
 /** Sharpness of the template softmax. Lower = more confident, more brittle. */
@@ -85,7 +87,7 @@ export class FingerspellClassifier {
     const priorProbs = this.templateProbabilities(geom);
     const merged = this.mergePersonal(priorProbs, features);
 
-    return this.finish(merged, features);
+    return this.finish(merged, features, geom);
   }
 
   /** Same as predict(), but consults a loaded ONNX model when available. */
@@ -106,7 +108,7 @@ export class FingerspellClassifier {
     const total = Object.values(dist).reduce((a, b) => a + b, 0) || 1;
     for (const k of Object.keys(dist)) dist[k] /= total;
 
-    return this.finish(dist, base.features);
+    return this.finish(dist, base.features, base.geometry);
   }
 
   private templateProbabilities(geom: HandGeometry): Record<string, number> {
@@ -147,7 +149,11 @@ export class FingerspellClassifier {
     return out;
   }
 
-  private finish(dist: Record<string, number>, features: Float32Array): LetterPrediction {
+  private finish(
+    dist: Record<string, number>,
+    features: Float32Array,
+    geometry: HandGeometry,
+  ): LetterPrediction {
     const sorted = Object.entries(dist)
       .map(([label, confidence]) => ({ label, confidence }))
       .sort((a, b) => b.confidence - a.confidence);
@@ -159,6 +165,7 @@ export class FingerspellClassifier {
       alternates: sorted.slice(0, 3),
       distribution: dist,
       features,
+      geometry,
     };
   }
 }

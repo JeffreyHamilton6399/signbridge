@@ -29,7 +29,8 @@ import { useEffect, useRef } from 'react';
 import { usePipeline } from '@/vision/pipeline';
 import { useSettings } from '@/store';
 import { HAND_CONNECTIONS, POSE_UPPER_CONNECTIONS } from '@/vision/types';
-import type { Point3, VisionFrame } from '@/vision/types';
+import type { HandFrame, Point3, VisionFrame } from '@/vision/types';
+import type { ScanQuality } from '@/features/scanQuality';
 
 /** Never predict further ahead than this, however stale the frame is. */
 const MAX_EXTRAPOLATION_MS = 120;
@@ -125,9 +126,9 @@ export function LandmarkOverlay() {
 /**
  * Where the hand probably is *now*, given where it was and how it was moving.
  *
- * Falls back to the raw frame whenever there is no usable history — a first
- * frame, a hand that just appeared, or a different number of hands between
- * frames.
+ * Hands that have no counterpart in the previous frame — a first frame, or a
+ * hand that just appeared — are drawn where they were reported. A hand that
+ * does have one is drawn where it is going.
  */
 export function predict(
   latest: Snapshot,
@@ -139,7 +140,6 @@ export function predict(
 
   const dt = latest.frame.t - previous.frame.t;
   if (dt <= 0) return frame;
-  if (frame.hands.length !== previous.frame.hands.length) return frame;
 
   const ahead = Math.min(now - latest.frame.t, MAX_EXTRAPOLATION_MS);
   if (ahead <= 0) return frame;
@@ -148,10 +148,13 @@ export function predict(
   return {
     ...frame,
     hands: frame.hands.map((hand, i) => {
-      const before = previous.frame.hands[i];
-      // Handedness swapping between frames means the pairing is wrong; a
-      // velocity computed across two different hands would fling the skeleton.
-      if (!before || before.handedness !== hand.handedness) return hand;
+      // Pair by tracker id. Pairing by position in the list means a velocity
+      // computed across two different hands, which flings the skeleton across
+      // the frame; the previous guard against that compared handedness labels,
+      // which also made the overlay stall for a frame every time a label
+      // flipped. Identity is the thing actually being asked about.
+      const before = matchPrevious(previous.frame.hands, hand, i);
+      if (!before) return hand;
       return { ...hand, landmarks: advance(hand.landmarks, before.landmarks, step) };
     }),
     pose:
@@ -159,6 +162,22 @@ export function predict(
         ? advance(frame.pose, previous.frame.pose, step)
         : frame.pose,
   };
+}
+
+/**
+ * The same hand in the previous frame, or undefined if it was not there.
+ *
+ * Falls back to matching by list position and handedness for frames that carry
+ * no tracker id — fixtures and hand-built test frames.
+ */
+function matchPrevious(
+  previous: readonly HandFrame[],
+  hand: HandFrame,
+  index: number,
+): HandFrame | undefined {
+  if (hand.id !== undefined) return previous.find((h) => h.id === hand.id);
+  const positional = previous[index];
+  return positional && positional.handedness === hand.handedness ? positional : undefined;
 }
 
 function advance(current: Point3[], before: Point3[], step: number): Point3[] {
@@ -261,14 +280,38 @@ function draw(
  * well. Landmarks at the very edge of frame are unreliable, and the honest fix
  * is to tell people where to stand rather than silently degrading.
  */
-export function FramingGuide() {
+export function FramingGuide({ scan }: { scan?: ScanQuality }) {
+  // The caption was static advice nobody needed after the first ten seconds.
+  // Given a live reading of the input it becomes the one thing worth saying:
+  // what is currently wrong. Blocking problems are stated plainly; a merely
+  // imperfect view gets the same words in a quieter register, because a hint
+  // that shouts at every small imperfection is a hint people learn to ignore.
+  const blocking = scan?.unusable ?? false;
+  const message = scan?.advice || 'Keep hands inside the guide';
+
   return (
-    <div aria-hidden="true" className="pointer-events-none absolute inset-0 z-10">
-      <div className="absolute inset-x-[8%] inset-y-[14%] rounded-[2rem] border border-dashed border-white/18 sm:inset-x-[12%] sm:inset-y-[8%]" />
+    <div className="pointer-events-none absolute inset-0 z-10">
+      <div
+        aria-hidden="true"
+        className={`absolute inset-x-[8%] inset-y-[14%] rounded-[2rem] border border-dashed transition-colors duration-300 sm:inset-x-[12%] sm:inset-y-[8%] ${
+          blocking ? 'border-[var(--color-signal)]/60' : 'border-white/18'
+        }`}
+      />
       {/* Below the top chrome, which on a phone is two stacked rows deep. */}
       <div className="absolute inset-x-0 top-[15%] flex justify-center sm:top-[9%] short:top-[24%]">
-        <span className="rounded-full bg-black/45 px-3 py-1 text-[11px] font-medium tracking-wide text-white/70 backdrop-blur-sm">
-          Keep hands inside the guide
+        <span
+          // Polite, not assertive: this changes as the hand moves, and a screen
+          // reader interrupting every letter to say "move closer" would be
+          // worse than saying nothing.
+          role="status"
+          aria-live="polite"
+          className={`rounded-full px-3 py-1 text-[11px] font-medium tracking-wide backdrop-blur-sm transition-colors duration-300 ${
+            blocking
+              ? 'bg-[var(--color-signal)]/90 text-[#1a1200]'
+              : 'bg-black/45 text-white/70'
+          }`}
+        >
+          {message}
         </span>
       </div>
     </div>

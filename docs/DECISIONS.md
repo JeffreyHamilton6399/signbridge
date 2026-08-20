@@ -561,3 +561,68 @@ there for callers that have no distribution to give.
 **None of this is a substitute for a trained model or for calibration.** It is a
 better reading of the same evidence, and the honest per-letter numbers in the
 debug panel still come from the user's own samples.
+
+## Making the scan itself better
+
+The previous round improved what happens *after* a frame arrives. This one is
+about the frame.
+
+### Hands now have an identity
+
+MediaPipe reports each frame independently. It hands you a list of hands and a
+Left/Right label per hand, and promises neither that the hand at index 0 this
+frame is the hand that was at index 0 last frame, nor that the label is the
+same. Both change in practice — the label flips on rotation, near the frame
+edge, and when the hands cross — and three separate consumers had quietly
+assumed otherwise:
+
+- the 1€ filter keyed its state on the handedness label, so every flip threw
+  away the filter history and let a frame of raw jitter through to the classifier
+- the overlay declined to extrapolate when labels disagreed between frames, so a
+  flip showed up as the skeleton stalling
+- `pickHand` in auto mode took whichever hand had the higher handedness score,
+  which can swap mid-word
+
+`vision/tracking.ts` establishes identity once, before anything else looks at a
+frame. Hands are matched to the previous frame by wrist position — they cannot
+move far in 33ms — and each track accumulates its own evidence about which
+physical hand it is. The reported label is that accumulated verdict, not this
+frame's guess, weighted by how sure the detector was, which is what stops it
+flickering. A hand that teleports across the frame, or reappears after being
+gone, gets a new id rather than a track being stretched to reach it.
+
+The reported `handednessScore` changed meaning: it is now how settled the
+verdict is, not how sure one frame was. A hand whose label has been flip-flopping
+should not claim 98%.
+
+### The app says when it cannot see, instead of guessing
+
+Most recognition failures are not model failures. The hand is half out of frame,
+or far away, or turned edge-on so the fingers occlude each other, or moving too
+fast to be anything but a smear. In every one of those cases MediaPipe still
+produces 21 confident-looking landmarks — several of them extrapolated past the
+frame edge — and the classifier still returns its best guess, with a confidence
+that knows nothing about any of it.
+
+`features/scanQuality.ts` measures the input rather than the output: hand span
+against frame height, landmarks outside the frame, wrist speed in hand spans per
+second, and how edge-on the palm is. It never consults what the classifier said,
+because a check that reads the answer it is meant to be checking is not a check.
+
+When the view is unusable, fingerspelling feeds the committer a null label and
+resets the motion buffer. No auto-space — the hand is still up, it just cannot
+be read — and nothing is committed. **This can only ever withhold.** There is no
+path by which it raises a confidence or forces a commit, and the tests say so.
+
+The framing guide's caption, which was static advice nobody needed after the
+first ten seconds, now carries the live reason: "Bring your whole hand into
+view", "Move closer to the camera", "Hold the shape still for a moment", "Turn
+your palm toward the camera". Blocking problems are stated plainly; a merely
+imperfect view gets the same words in a quieter register, because a hint that
+shouts at every small imperfection is one people learn to ignore. It is a polite
+live region, not an assertive one — a screen reader interrupting every letter to
+say "move closer" would be worse than saying nothing.
+
+Thresholds are deliberately generous. False nagging is worse than silence, and
+an app that refuses to read a hand it could have read is worse than one that
+occasionally guesses.

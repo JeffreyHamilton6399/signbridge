@@ -133,10 +133,15 @@ export class PointSetFilter {
 /**
  * Smooths a whole VisionFrame, keeping a separate filter per tracked hand.
  *
- * Hands are keyed by handedness, because that is the only stable identity
- * MediaPipe gives us. When it reports two hands with the same label — which it
- * does occasionally, and wrongly — the second one gets its own slot rather than
- * fighting the first for the same filter state.
+ * Hands are keyed by the tracker's stable id (see vision/tracking.ts). Keying
+ * on the handedness label instead — which is what this did first — means that
+ * every time MediaPipe flips a label, the filter state is discarded and a frame
+ * of raw jitter goes straight through to the classifier. Labels flip more often
+ * than you would like: on rotation, near the frame edge, and whenever the hands
+ * cross.
+ *
+ * Frames without ids fall back to keying on handedness, which keeps hand-built
+ * test frames and fixtures working.
  */
 export class FrameSmoother {
   private hands = new Map<string, { landmarks: PointSetFilter; world: PointSetFilter }>();
@@ -154,7 +159,8 @@ export class FrameSmoother {
 
     this.seen.clear();
     const hands: HandFrame[] = frame.hands.map((hand) => {
-      const key = slotFor(this.seen, hand.handedness);
+      const key =
+        hand.id === undefined ? slotFor(this.seen, hand.handedness) : claim(this.seen, `#${hand.id}`);
       let slot = this.hands.get(key);
       if (!slot) {
         slot = { landmarks: new PointSetFilter(), world: new PointSetFilter() };
@@ -183,10 +189,20 @@ export class FrameSmoother {
   }
 }
 
+/**
+ * Fallback keying for frames with no tracker id. MediaPipe occasionally reports
+ * two hands with the same label; the second gets its own slot rather than
+ * fighting the first for one filter's state.
+ */
 function slotFor(seen: Set<string>, handedness: Handedness): string {
   let key: string = handedness;
   let n = 1;
   while (seen.has(key)) key = `${handedness}#${++n}`;
+  seen.add(key);
+  return key;
+}
+
+function claim(seen: Set<string>, key: string): string {
   seen.add(key);
   return key;
 }

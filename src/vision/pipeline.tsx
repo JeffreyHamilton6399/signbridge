@@ -25,6 +25,7 @@ import type { VisionFrame } from './types';
 import { CameraError, listCameras, openCamera, stopStream, toCameraError } from '@/camera/camera';
 import type { CameraDevice } from '@/camera/camera';
 import { FrameSmoother } from '@/features/smoothing';
+import { HandTracker } from './tracking';
 import type { SmoothingLevel } from '@/features/smoothing';
 import { useSettings } from '@/store';
 import { useSession } from '@/store';
@@ -66,6 +67,9 @@ export function PipelineProvider({ children }: { children: ReactNode }) {
   // classifier are looking at exactly the same hand — if they diverged, the
   // skeleton would stop agreeing with the letter it produced.
   const smootherRef = useRef(new FrameSmoother());
+  // Runs before the smoother, because the smoother keys its filter state on the
+  // identity this assigns.
+  const trackerRef = useRef(new HandTracker());
   const smoothingRef = useRef<SmoothingLevel>('standard');
   const handSpaceRef = useRef<'world' | 'image' | null>(null);
 
@@ -106,6 +110,7 @@ export function PipelineProvider({ children }: { children: ReactNode }) {
     // Stale filter state would ease the first frame of the next session in from
     // wherever the hand was when this one ended.
     smootherRef.current.reset();
+    trackerRef.current.reset();
     stopStream(streamRef.current);
     streamRef.current = null;
     if (videoRef.current) videoRef.current.srcObject = null;
@@ -156,7 +161,10 @@ export function PipelineProvider({ children }: { children: ReactNode }) {
       const client = new VisionClient({
         onFrame(raw, inferenceMs) {
           const now = performance.now();
-          const frame = smootherRef.current.smooth(raw, smoothingRef.current);
+          const frame = smootherRef.current.smooth(
+            trackerRef.current.track(raw),
+            smoothingRef.current,
+          );
           const times = frameTimesRef.current;
           times.push(now);
           while (times.length > 30) times.shift();

@@ -198,7 +198,7 @@ function Shell() {
             className="absolute inset-0 z-[5] cursor-default"
           />
           <LandmarkOverlay />
-          {settings.camera.framingGuide && <FramingGuide />}
+          {settings.camera.framingGuide && <FramingGuide scan={fingerspell.scan} />}
           <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 h-[38%] bg-gradient-to-t from-black/70 to-transparent" />
         </>
       )}

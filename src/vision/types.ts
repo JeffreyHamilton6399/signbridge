@@ -10,6 +10,16 @@ export interface Point3 {
 export type Handedness = 'Left' | 'Right';
 
 export interface HandFrame {
+  /**
+   * Stable identity for this hand across frames, assigned by
+   * {@link ../vision/tracking!HandTracker}. MediaPipe reports each frame
+   * independently and does not promise that hand 0 this frame is hand 0 last
+   * frame, so anything holding per-hand state over time — filters, velocity,
+   * whose hand to read — must key on this rather than on index or handedness.
+   *
+   * Optional because a hand-built test frame or a fixture may not carry one.
+   */
+  id?: number;
   /** 21 landmarks, MediaPipe hand topology, image-normalized coordinates. */
   landmarks: Point3[];
   /**

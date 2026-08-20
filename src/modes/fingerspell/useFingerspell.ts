@@ -20,6 +20,8 @@ import { buildPrototypes, asLetterModel, trainLinearHead } from './calibration';
 import type { CalibrationSample } from './calibration';
 import { loadCalibration, loadUserWords, saveUserWords, saveCalibration } from '@/db/idb';
 import { handCentroid, handSpan } from '@/features/normalize';
+import { assessScan, GOOD_SCAN, ScanQualityTracker } from '@/features/scanQuality';
+import type { ScanQuality } from '@/features/scanQuality';
 import { speak, speakLetter, inferPunctuation } from '@/speech/tts';
 import type { HandFrame } from '@/vision/types';
 
@@ -32,6 +34,11 @@ export interface FingerspellApi {
   samples: readonly CalibrationSample[];
   /** Set briefly after a correction is folded into the personal model. */
   taught: { letter: string; samples: number } | null;
+  /**
+   * How good a look the camera is getting, and what to do about it. Drives the
+   * live hint over the video and gates commits when the input is unusable.
+   */
+  scan: ScanQuality;
 }
 
 export function useFingerspell(enabled: boolean): FingerspellApi {
@@ -42,11 +49,21 @@ export function useFingerspell(enabled: boolean): FingerspellApi {
   const classifier = useMemo(() => new FingerspellClassifier(), []);
   const committer = useMemo(() => new DwellCommitter(), []);
   const motion = useMemo(() => new MotionLetterDetector(), []);
+  const scanTracker = useMemo(() => new ScanQualityTracker(), []);
   const autocompleteRef = useRef<Autocomplete>(new Autocomplete());
   const samplesRef = useRef<CalibrationSample[]>([]);
   /** Features of the most recent committed letter, for teaching from a fix. */
   const lastFeaturesRef = useRef<Float32Array | null>(null);
   const [taught, setTaught] = useState<{ letter: string; samples: number } | null>(null);
+  const [scan, setScanState] = useState<ScanQuality>(GOOD_SCAN);
+  // Written every frame, read only when it changes: a hint that re-rendered at
+  // 30fps would cost more than it is worth.
+  const scanRef = useRef<ScanQuality>(GOOD_SCAN);
+  const setScan = useCallback((next: ScanQuality) => {
+    if (next.problem === scanRef.current.problem) return;
+    scanRef.current = next;
+    setScanState(next);
+  }, []);
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
 
@@ -136,6 +153,8 @@ export function useFingerspell(enabled: boolean): FingerspellApi {
 
       const hand = pickHand(frame.hands, recognition.dominantHand);
       if (!hand) {
+        scanTracker.update(undefined, frame.t);
+        setScan(assessScan({ hand: undefined, frame, speed: 0, palmFacing: 0 }));
         const event = committer.feed({ label: null, confidence: 0, t: frame.t });
         if (event.type === 'space') commitWordAndLearn();
         state.setTentative(null);
@@ -145,6 +164,37 @@ export function useFingerspell(enabled: boolean): FingerspellApi {
 
       const prediction = classifier.predict(hand, aspect);
       lastFeaturesRef.current = prediction.features;
+
+      /**
+       * Is the camera getting a good enough look for a letter to mean anything?
+       *
+       * The classifier will happily label a hand that is half out of frame or
+       * ten feet away, because it never sees the frame — only 63 numbers, which
+       * are just as confidently wrong as they are confidently right. When the
+       * input is that poor the honest move is to stop producing letters and say
+       * why, so the loop below feeds the committer a null label rather than a
+       * guess. It never works the other way: nothing here can raise a
+       * confidence or force a commit.
+       */
+      const scan = assessScan({
+        hand,
+        frame,
+        speed: scanTracker.update(hand, frame.t),
+        palmFacing: prediction.geometry.palmFacing,
+      });
+      setScan(scan);
+
+      if (scan.unusable) {
+        // Withhold. The hand is still there, so no auto-space — it has not been
+        // put down, we just cannot read it — but nothing gets committed and the
+        // motion buffer is dropped rather than accumulating a trajectory built
+        // from landmarks half of which are extrapolated off the frame edge.
+        committer.feed({ label: null, confidence: 0, handY: handCentroid(hand.landmarks).y, t: frame.t });
+        motion.reset();
+        state.setTentative(null);
+        state.setAlternates([], {});
+        return;
+      }
 
       // Motion letters run alongside the static head and pre-empt it, because a
       // J held still is an I and would otherwise commit as one.
@@ -285,6 +335,7 @@ export function useFingerspell(enabled: boolean): FingerspellApi {
     commitSpace,
     reloadCalibration,
     taught,
+    scan,
     samples: samplesRef.current,
   };
 }
