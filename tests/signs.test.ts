@@ -19,6 +19,8 @@ import {
   recognizeSign,
   signHint,
 } from '@/modes/signs/signTemplates';
+import { SignSegmenter } from '@/modes/signs/fewShot';
+import { PER_FRAME_DIM } from '@/features/window';
 import { SHAPES, geometry, observation } from './helpers/geometry';
 
 describe('handshape predicates', () => {
@@ -412,5 +414,102 @@ describe('vocabulary bookkeeping', () => {
   it('the rejection floor is high enough to mean something', () => {
     expect(REJECTION_FLOOR).toBeGreaterThan(0.3);
     expect(SIGN_TEMPLATES.length).toBeGreaterThanOrEqual(24);
+  });
+});
+
+describe('segmentation', () => {
+  const frame = () => Float32Array.from({ length: PER_FRAME_DIM }, () => 0.1);
+
+  /** Feed `n` frames of a given energy, returning any completed windows. */
+  function feed(
+    segmenter: SignSegmenter,
+    energy: number,
+    n: number,
+    handPresent = true,
+  ): Float32Array[][] {
+    const out: Float32Array[][] = [];
+    for (let i = 0; i < n; i++) {
+      const done = segmenter.push(frame(), energy, handPresent);
+      if (done) out.push(done);
+    }
+    return out;
+  }
+
+  it('will not fire before it has learned the noise floor', () => {
+    const segmenter = new SignSegmenter();
+    // Loud from the very first frame, with no idea what "still" looks like yet.
+    expect(feed(segmenter, 0.5, 10)).toHaveLength(0);
+    expect(segmenter.calibrated).toBe(false);
+  });
+
+  it('learns a quiet scene and then triggers on real movement', () => {
+    const segmenter = new SignSegmenter();
+    feed(segmenter, 0.002, 40); // still
+    expect(segmenter.calibrated).toBe(true);
+
+    const windows = [...feed(segmenter, 0.2, 20), ...feed(segmenter, 0.002, 10)];
+    expect(windows).toHaveLength(1);
+    expect(windows[0].length).toBeGreaterThanOrEqual(6);
+  });
+
+  it('adapts its threshold to a noisy scene instead of firing constantly', () => {
+    const quiet = new SignSegmenter();
+    feed(quiet, 0.002, 40);
+
+    const noisy = new SignSegmenter();
+    // A restless signer, a shaky camera, poor lighting: the floor is higher.
+    for (let i = 0; i < 60; i++) noisy.push(frame(), 0.04 + (i % 5) * 0.004, true);
+
+    expect(noisy.startThreshold).toBeGreaterThan(quiet.startThreshold);
+    // Movement that would be a sign in the quiet scene is just background here.
+    expect(feed(noisy, 0.05, 30)).toHaveLength(0);
+  });
+
+  it('ignores a twitch that clears the bar but never gets going', () => {
+    const segmenter = new SignSegmenter();
+    feed(segmenter, 0.002, 40);
+    // Just over the line, briefly — repositioning a hand, not signing.
+    const windows = [...feed(segmenter, 0.014, 10), ...feed(segmenter, 0.002, 10)];
+    expect(windows).toHaveLength(0);
+  });
+
+  it('ends the sign when the hand leaves frame', () => {
+    const segmenter = new SignSegmenter();
+    feed(segmenter, 0.002, 40);
+    feed(segmenter, 0.2, 12);
+    expect(segmenter.recording).toBe(true);
+
+    const windows = feed(segmenter, 0.2, 1, false);
+    expect(windows).toHaveLength(1);
+    expect(segmenter.recording).toBe(false);
+  });
+
+  it('will not start a sign with no hand in frame', () => {
+    const segmenter = new SignSegmenter();
+    feed(segmenter, 0.002, 40);
+    expect(feed(segmenter, 0.3, 20, false)).toHaveLength(0);
+  });
+
+  it('trims the trailing settle so it is not measured as part of the sign', () => {
+    const segmenter = new SignSegmenter();
+    feed(segmenter, 0.002, 40);
+    const [window] = [...feed(segmenter, 0.2, 20), ...feed(segmenter, 0.002, 10)];
+    // 20 busy frames in, minus the quiet frames that ended it.
+    expect(window.length).toBeLessThan(21);
+  });
+
+  it('closes a runaway window rather than growing without bound', () => {
+    const segmenter = new SignSegmenter();
+    feed(segmenter, 0.002, 40);
+    const windows = feed(segmenter, 0.3, 200);
+    expect(windows.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('forgets the floor on recalibrate', () => {
+    const segmenter = new SignSegmenter();
+    feed(segmenter, 0.002, 40);
+    expect(segmenter.calibrated).toBe(true);
+    segmenter.recalibrate();
+    expect(segmenter.calibrated).toBe(false);
   });
 });

@@ -71,7 +71,7 @@ export function SettingsPanel({
       aria-label="Settings"
       onClick={(e) => e.target === e.currentTarget && onClose()}
     >
-      <div className="sb-scroll h-full w-full max-w-md overflow-y-auto bg-[var(--sb-bg)] p-5 shadow-2xl sm:border-l sm:border-[var(--sb-panel-edge)]">
+      <div className="sb-scroll h-full w-full max-w-md overflow-y-auto bg-[var(--sb-bg)] px-5 pt-[max(1.25rem,env(safe-area-inset-top))] pb-[max(1.25rem,env(safe-area-inset-bottom))] shadow-2xl sm:border-l sm:border-[var(--sb-panel-edge)]">
         <div className="mb-4 flex items-center justify-between">
           <h2 className="font-[family-name:var(--font-display)] text-2xl font-bold">Settings</h2>
           <button

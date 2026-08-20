@@ -101,7 +101,7 @@ function ControlButton({
       <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
         {children}
       </svg>
-      <span className="hidden sm:inline">{label}</span>
+      <span className="hidden sm:inline short:hidden">{label}</span>
     </button>
   );
 }

@@ -120,46 +120,102 @@ export class FewShotMatcher {
 }
 
 /**
- * Segments a continuous stream into candidate sign windows.
+ * Deciding where a sign starts and ends.
  *
- * Energy rises when a sign starts and falls at its end; we emit the frames
- * between those two moments. Crude compared to a CTC head, but it is honest,
- * runs in microseconds, and does not pretend to segment continuous signing -
- * that is Phase 4's problem, behind an experimental flag.
+ * This matters more than the templates do. Everything downstream — handshape,
+ * location, direction of travel — is computed over the window this produces, so
+ * a window that starts halfway through a sign or runs on into the next one
+ * produces garbage no rule can rescue.
+ *
+ * ## Why the thresholds are learned, not fixed
+ *
+ * Motion energy is measured in normalized landmark units, which sounds
+ * device-independent and is not: it scales with how much of the frame the
+ * signer fills, how noisy the landmarks are in the current lighting, and how
+ * much the person moves while at rest. A threshold tuned on one setup silently
+ * fails on another — either never triggering, or triggering constantly.
+ *
+ * So the segmenter watches the quiet periods and learns what "still" looks like
+ * here, then triggers on a real departure from it. Hysteresis (a lower bar to
+ * stop than to start) stops it flickering at the boundary.
  */
 export class SignSegmenter {
   private active: Float32Array[] = [];
+  private energies: number[] = [];
   private quietFrames = 0;
   private busyFrames = 0;
 
+  /** EMA of energy while at rest — the noise floor for this person and scene. */
+  private baseline = 0;
+  /** EMA of absolute deviation from the baseline. */
+  private deviation = 0;
+  private samples = 0;
+
   constructor(
-    private startEnergy = 0.035,
-    private stopEnergy = 0.018,
-    private minFrames = 8,
-    private quietFramesToEnd = 6,
+    /** Departures above baseline + this many deviations start a sign. */
+    private startSigmas = 3.5,
+    /** Below baseline + this many deviations counts as quiet again. */
+    private stopSigmas = 1.5,
+    private minFrames = 6,
+    private quietFramesToEnd = 5,
   ) {}
 
   reset(): void {
     this.active = [];
+    this.energies = [];
     this.quietFrames = 0;
     this.busyFrames = 0;
+  }
+
+  /** Forget the learned noise floor — after a camera or resolution change. */
+  recalibrate(): void {
+    this.reset();
+    this.baseline = 0;
+    this.deviation = 0;
+    this.samples = 0;
   }
 
   get recording(): boolean {
     return this.active.length > 0;
   }
 
+  /** True once enough quiet has been seen to trust the thresholds. */
+  get calibrated(): boolean {
+    return this.samples >= 15;
+  }
+
+  get startThreshold(): number {
+    // The absolute floor stops a perfectly still scene from setting the bar so
+    // low that landmark jitter reads as signing.
+    return Math.max(0.012, this.baseline + this.startSigmas * this.deviation);
+  }
+
+  get stopThreshold(): number {
+    return Math.max(0.006, this.baseline + this.stopSigmas * this.deviation);
+  }
+
   /**
+   * @param handPresent false when no hand is in frame. A sign cannot start
+   *   without one, and one already running ends.
    * @returns the completed window when a sign just ended, otherwise null.
    */
-  push(frame: Float32Array, energy: number): Float32Array[] | null {
+  push(frame: Float32Array, energy: number, handPresent = true): Float32Array[] | null {
     if (this.active.length === 0) {
-      if (energy > this.startEnergy) {
+      // Only learn the floor while idle; learning during a sign would drag the
+      // threshold up until nothing ever triggers again.
+      this.learn(energy);
+
+      if (!handPresent || !this.calibrated) {
+        this.busyFrames = 0;
+        return null;
+      }
+      if (energy > this.startThreshold) {
         this.busyFrames++;
-        // Two consecutive busy frames before starting, so a single noisy frame
-        // does not open a window.
+        // Two consecutive busy frames, so a single noisy frame cannot open a
+        // window.
         if (this.busyFrames >= 2) {
           this.active = [frame];
+          this.energies = [energy];
           this.quietFrames = 0;
         }
       } else {
@@ -169,21 +225,58 @@ export class SignSegmenter {
     }
 
     this.active.push(frame);
-    if (energy < this.stopEnergy) this.quietFrames++;
+    this.energies.push(energy);
+
+    // A hand leaving the frame ends the sign immediately — waiting for the
+    // quiet count would tack the empty frames onto the window.
+    if (!handPresent) return this.finish(0);
+
+    if (energy < this.stopThreshold) this.quietFrames++;
     else this.quietFrames = 0;
 
-    if (this.quietFrames >= this.quietFramesToEnd) {
-      const window = this.active.slice(0, -this.quietFrames);
-      this.reset();
-      return window.length >= this.minFrames ? window : null;
-    }
+    if (this.quietFrames >= this.quietFramesToEnd) return this.finish(this.quietFrames);
 
     // Runaway guard: nobody signs one lexical item for four seconds.
-    if (this.active.length > WINDOW_FRAMES * 2) {
-      const window = this.active.slice();
-      this.reset();
-      return window;
-    }
+    if (this.active.length > 120) return this.finish(0);
+
     return null;
+  }
+
+  private learn(energy: number): void {
+    if (this.samples === 0) {
+      this.baseline = energy;
+      this.deviation = energy * 0.5;
+      this.samples = 1;
+      return;
+    }
+    // Slow, so a hand passing through frame does not move the floor much.
+    const alpha = this.samples < 30 ? 0.1 : 0.02;
+    const delta = energy - this.baseline;
+    this.baseline += alpha * delta;
+    this.deviation += alpha * (Math.abs(delta) - this.deviation);
+    this.samples++;
+  }
+
+  /**
+   * Close the window, trimming the trailing quiet.
+   *
+   * The trailing frames are the hand coming to rest, which is not part of the
+   * sign and drags the "where did it end up" measurements toward the rest
+   * position — the difference between GOOD ending on the palm and GOOD ending
+   * wherever the hand dropped afterwards.
+   */
+  private finish(trailingQuiet: number): Float32Array[] | null {
+    const end = Math.max(0, this.active.length - trailingQuiet);
+    const window = this.active.slice(0, end);
+    const peak = this.energies.length ? Math.max(...this.energies) : 0;
+    const threshold = this.startThreshold;
+    this.reset();
+
+    if (window.length < this.minFrames) return null;
+    // A window that only just cleared the bar and never got going is a hand
+    // being repositioned, not a sign. Requiring a real peak is what keeps
+    // scratching your nose out of the transcript.
+    if (peak < threshold * 1.35) return null;
+    return window;
   }
 }

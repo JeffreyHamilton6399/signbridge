@@ -15,11 +15,11 @@ export function Disclaimer() {
         {/* The full sentence needs three lines on a phone, which is most of the
             screen. The part that must never be dropped stays; the rest is one
             tap away in Settings > About. */}
-        <span className="hidden text-[var(--sb-fg-muted)] sm:inline">
+        <span className="hidden text-[var(--sb-fg-muted)] sm:inline short:hidden">
           Do not rely on it for medical, legal, emergency, financial or educational-access
           conversations.
         </span>
-        <span className="text-[var(--sb-fg-muted)] sm:hidden">Not for medical or legal use.</span>
+        <span className="text-[var(--sb-fg-muted)] sm:hidden short:inline">Not for medical or legal use.</span>
       </p>
     </div>
   );

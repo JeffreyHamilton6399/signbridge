@@ -6,7 +6,7 @@
  * extreme edge - never in the centre-bottom of frame, which is exactly where
  * hands are.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { PipelineProvider, usePipeline } from '@/vision/pipeline';
 import { useSession, useSettings } from '@/store';
 import { useTheme } from '@/ui/useTheme';
@@ -59,6 +59,13 @@ function Shell() {
   const [correctionOpen, setCorrectionOpen] = useState(false);
   const [debugOpen, setDebugOpen] = useState(false);
   const [signRecorderOpen, setSignRecorderOpen] = useState(false);
+  // Signs mode fills this in; the alternates strip calls it so that picking a
+  // different sign both fixes the transcript and teaches the recogniser.
+  const teachSignRef = useRef<((label: string) => void) | null>(null);
+  // On a phone you cannot hold the device and sign at the same time, so it gets
+  // propped up and looked at from a distance. Tapping the view clears the
+  // controls out of the way — the disclaimer stays, because it always does.
+  const [immersive, setImmersive] = useState(false);
 
   const mode = settings.recognition.mode;
   const cameraMode = mode === 'fingerspell' || mode === 'signs' || mode === 'conversation';
@@ -177,6 +184,13 @@ function Shell() {
 
       {cameraMode && pipeline.active && (
         <>
+          <button
+            type="button"
+            aria-label={immersive ? 'Show controls' : 'Hide controls'}
+            aria-pressed={immersive}
+            onClick={() => setImmersive((v) => !v)}
+            className="absolute inset-0 z-[5] cursor-default"
+          />
           <LandmarkOverlay />
           {settings.camera.framingGuide && <FramingGuide />}
           <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 h-[38%] bg-gradient-to-t from-black/70 to-transparent" />
@@ -194,7 +208,7 @@ function Shell() {
         }`}
       >
         <Disclaimer />
-        <div className="flex items-center gap-1.5 sm:hidden">
+        <div className={`flex items-center gap-1.5 sm:hidden short:flex ${immersive ? 'invisible opacity-0' : 'visible opacity-100'} transition-[opacity,visibility] duration-300`}>
           <nav aria-label="Mode" className="sb-scroll flex gap-1 overflow-x-auto">
             <ModeButtons
               mode={mode}
@@ -220,7 +234,7 @@ function Shell() {
       {/* Mode rail — wide screens only, at the extreme left edge. */}
       <nav
         aria-label="Mode"
-        className={`absolute top-1/2 left-2 z-30 hidden -translate-y-1/2 flex-col gap-1.5 sm:flex ${
+        className={`absolute top-1/2 left-2 z-30 hidden -translate-y-1/2 flex-col gap-1.5 sm:flex short:hidden ${immersive ? 'invisible opacity-0' : 'visible opacity-100'} transition-[opacity,visibility] duration-300 ${
           cameraMode && pipeline.active ? 'sb-on-video' : ''
         }`}
       >
@@ -233,7 +247,7 @@ function Shell() {
 
       {/* Top-right utilities — wide screens only. */}
       <div
-        className={`absolute top-3 right-3 z-40 hidden gap-1.5 pt-[env(safe-area-inset-top)] sm:flex ${
+        className={`absolute top-3 right-3 z-40 hidden gap-1.5 pt-[env(safe-area-inset-top)] sm:flex short:hidden ${immersive ? 'invisible opacity-0' : 'visible opacity-100'} transition-[opacity,visibility] duration-300 ${
           cameraMode && pipeline.active ? 'sb-on-video' : ''
         }`}
       >
@@ -248,9 +262,11 @@ function Shell() {
       </div>
 
       {/* Main area. */}
-      <main id="main" className="absolute inset-0 z-20">
+      {/* pointer-events-none so a tap lands on the camera view beneath (which
+          toggles the controls); each pane that needs input opts back in. */}
+      <main id="main" className="pointer-events-none absolute inset-0 z-20">
         {showOnboarding && (
-          <div className="sb-scroll h-full overflow-y-auto bg-[var(--sb-bg)]">
+          <div className="sb-scroll pointer-events-auto h-full overflow-y-auto bg-[var(--sb-bg)]">
             <Onboarding
               onStart={() => {
                 patch({ onboardingComplete: true });
@@ -264,19 +280,23 @@ function Shell() {
         )}
 
         {mode === 'reverse' && (
-          <div className="h-full bg-[var(--sb-bg)]">
+          <div className="pointer-events-auto h-full bg-[var(--sb-bg)]">
             <ReverseMode />
           </div>
         )}
 
         {mode === 'conversation' && settings.experimental.conversationMode && (
-          <div className="h-full bg-[var(--sb-bg)]/92">
+          <div className="pointer-events-auto h-full bg-[var(--sb-bg)]/92">
             <ConversationMode />
           </div>
         )}
 
         {mode === 'signs' && pipeline.active && (
-          <SignsMode recorderOpen={signRecorderOpen} onCloseRecorder={() => setSignRecorderOpen(false)} />
+          <SignsMode
+            recorderOpen={signRecorderOpen}
+            onCloseRecorder={() => setSignRecorderOpen(false)}
+            onTeachRef={teachSignRef}
+          />
         )}
 
         {cameraMode && pipeline.active && mode !== 'conversation' && <Captions />}
@@ -284,10 +304,21 @@ function Shell() {
 
       {/* Bottom control bar — extreme edge, below the caption band. */}
       {cameraMode && pipeline.active && (
-        <div className="sb-on-video absolute inset-x-0 bottom-0 z-30 flex flex-col gap-2 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+        <div
+          className={`sb-on-video sb-control-bar absolute inset-x-0 bottom-0 z-30 flex flex-col gap-2 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] ${immersive ? 'invisible opacity-0' : 'visible opacity-100'} transition-[opacity,visibility] duration-300`}
+        >
           <div className="flex flex-wrap items-center justify-between gap-2">
             <SuggestionStrip onAccept={fingerspell.acceptSuggestion} />
-            <Alternates onPick={fingerspell.pickAlternate} />
+            <Alternates
+              onPick={(label) => {
+                if (mode === 'signs') {
+                  session.getState().replaceLastToken(label);
+                  teachSignRef.current?.(label);
+                } else {
+                  fingerspell.pickAlternate(label);
+                }
+              }}
+            />
           </div>
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="min-w-52 flex-1">
@@ -303,6 +334,15 @@ function Shell() {
             />
           </div>
         </div>
+      )}
+
+      {cameraMode && pipeline.active && !immersive && (
+        <p
+          aria-hidden="true"
+          className="sb-immersive-hint pointer-events-none absolute inset-x-0 bottom-[7.5rem] z-20 text-center text-[11px] text-white/55 sm:hidden"
+        >
+          Tap the view to clear the controls
+        </p>
       )}
 
       {pipeline.error && pipeline.active && (

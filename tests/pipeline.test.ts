@@ -183,11 +183,15 @@ describe('few-shot signs', () => {
   it('segments a burst of movement into one window', () => {
     const segmenter = new SignSegmenter();
     const f = Float32Array.from({ length: PER_FRAME_DIM }, () => 0.1);
+    // The segmenter learns what "still" looks like before it will call anything
+    // a sign; see tests/signs.test.ts for why that is worth the wait.
+    for (let i = 0; i < 40; i++) segmenter.push(f, 0.001);
+
     let completed: Float32Array[] | null = null;
-    for (let i = 0; i < 10; i++) completed ??= segmenter.push(f, 0.1);
+    for (let i = 0; i < 12; i++) completed ??= segmenter.push(f, 0.2);
     for (let i = 0; i < 10; i++) completed ??= segmenter.push(f, 0.001);
     expect(completed).not.toBeNull();
-    expect(completed!.length).toBeGreaterThanOrEqual(8);
+    expect(completed!.length).toBeGreaterThanOrEqual(6);
   });
 
   it('stays quiet when nothing moves', () => {

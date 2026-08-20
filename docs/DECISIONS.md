@@ -297,3 +297,70 @@ fixed 56px type, and the Signs and Debug panels covered the camera.
 - The mode buttons' `aria-label` includes the visible text (`Reverse — Text→ASL`)
   rather than replacing it — the WCAG 2.5.3 failure fixed once already in
   Settings and immediately reintroduced here.
+
+## Making signs better
+
+Three changes, in descending order of how much they matter.
+
+### Segmentation is learned, not fixed
+
+This mattered more than any template change. Everything downstream — handshape,
+location, direction of travel — is computed over the window the segmenter
+produces, so a window that starts halfway through a sign or runs into the next
+one produces garbage no rule can rescue.
+
+The old thresholds were constants in normalized landmark units, which sounds
+device-independent and is not: the scale depends on how much of the frame the
+signer fills, how noisy the landmarks are in the current light, and how much the
+person moves at rest. The segmenter now watches quiet periods, learns what
+"still" looks like on *this* setup, and triggers on a real departure from it,
+with hysteresis so it does not flicker at the boundary. It refuses to fire at
+all until it has seen enough quiet to trust the floor.
+
+It also requires a hand in frame, ends the window the moment the hand leaves,
+trims the trailing settle (which otherwise drags the "where did it end up"
+measurements toward wherever the hand dropped), and rejects windows whose peak
+never really cleared the bar — a hand being repositioned rather than a sign.
+
+### Corrections are training data
+
+When the user says "that was actually THANK-YOU", the window that produced the
+wrong guess is one perfectly labelled example of THANK-YOU as *they* sign it, in
+this room, with this camera. It now gets folded into their custom prototypes
+automatically. Since personal prototypes already outrank the built-in rules, a
+single correction has visible effect, and the recogniser improves through use
+rather than only through an explicit recording session.
+
+Kept to the last 16 examples per sign, so an old attempt at a sign since refined
+does not keep dragging the prototype backwards.
+
+### A margin, not just a threshold
+
+Confidence alone was not enough. HELLO and THANK-YOU can both score 0.8 on the
+same window, which means the evidence does not separate them — not that the
+higher one is right. Committing it would be a coin toss reported as certainty.
+The winner now has to beat the runner-up by a margin, and when it does not the
+UI says "HELLO or THANK-YOU — too close to call".
+
+## Making mobile good, not just unbroken
+
+The previous pass stopped things overlapping. This one is about the device.
+
+**You cannot hold a phone and sign at the same time.** Signing needs both hands,
+so the phone gets propped up and looked at from a distance. That reframes the
+whole screen: controls matter when you pick it up, and are in the way the rest
+of the time. Tapping the camera view now clears the chrome entirely. The
+disclaimer stays — "clearing the chrome" is not an exception to non-dismissible.
+
+Hidden chrome uses `visibility: hidden`, not just `opacity: 0`. An
+opacity-0 control is invisible to sighted users and still in the tab order and
+the accessibility tree, which is worse than either state.
+
+**Layout follows height, not just width.** A phone in landscape is 844px wide
+and 390px tall, so width-based breakpoints handed it the full desktop layout in
+a viewport with no room: the disclaimer ran under the utility buttons and the
+mode rail overlapped the captions. A `short` variant (`max-height: 540px`) now
+switches to the compact chrome regardless of width.
+
+Also: safe-area insets on full-height panels, so the Settings title clears the
+notch and the last row clears the home indicator.

@@ -36,7 +36,7 @@ export function Captions() {
       : display.captionPosition === 'side'
         ? 'top-16 bottom-24 right-0 left-auto w-[min(38ch,42vw)]'
         : // Clears the control bar; captions must never sit under the buttons.
-          'bottom-24 top-auto';
+          'bottom-24 short:bottom-16 top-auto';
 
   return (
     <div
@@ -44,7 +44,7 @@ export function Captions() {
     >
       <div
         ref={scrollRef}
-        className="sb-scroll max-h-[38vh] w-full max-w-5xl overflow-y-auto px-3 pb-2 sm:px-5"
+        className="sb-scroll sb-caption-band max-h-[38vh] w-full max-w-5xl overflow-y-auto px-3 pb-2 sm:px-5"
         aria-live="polite"
         aria-atomic="false"
         aria-label="Recognised text"

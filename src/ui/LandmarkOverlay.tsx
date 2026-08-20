@@ -252,7 +252,7 @@ export function FramingGuide() {
     <div aria-hidden="true" className="pointer-events-none absolute inset-0 z-10">
       <div className="absolute inset-x-[8%] inset-y-[14%] rounded-[2rem] border border-dashed border-white/18 sm:inset-x-[12%] sm:inset-y-[8%]" />
       {/* Below the top chrome, which on a phone is two stacked rows deep. */}
-      <div className="absolute inset-x-0 top-[15%] flex justify-center sm:top-[9%]">
+      <div className="absolute inset-x-0 top-[15%] flex justify-center sm:top-[9%] short:top-[24%]">
         <span className="rounded-full bg-black/45 px-3 py-1 text-[11px] font-medium tracking-wide text-white/70 backdrop-blur-sm">
           Keep hands inside the guide
         </span>

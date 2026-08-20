@@ -25,7 +25,7 @@ npm run dev          # http://localhost:5173
 The camera needs a secure context, so `localhost` or `https` only.
 
 ```bash
-npm test             # 150 unit tests
+npm test             # 165 unit tests
 npm run typecheck
 npm run build
 npm run e2e          # Playwright, against a fake camera device
@@ -56,6 +56,10 @@ training at all. Whole-word signs come from two places instead:
   Signs mode for the list and how to make each one.
 - **Anything you record**, at 8 examples per sign, matched by nearest centroid.
   Yours beat the built-ins, because they were recorded by you, in your room.
+- **Corrections teach it.** When it guesses wrong, tapping the right sign in the
+  alternates strip both fixes the transcript *and* files that attempt as a
+  labelled example. The recogniser improves through use, not just through
+  explicit recording sessions.
 
 Both refuse to guess: a movement that matches nothing produces silence rather
 than the least-bad label. Several built-ins are genuinely confusable — the list

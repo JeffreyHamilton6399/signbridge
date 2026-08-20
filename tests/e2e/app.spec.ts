@@ -90,3 +90,24 @@ test.describe('camera pipeline', () => {
     await expect(page.getByRole('button', { name: 'Retry' })).toBeVisible();
   });
 });
+
+test.describe('immersive mode', () => {
+  test('tapping the view clears the controls but never the disclaimer', async ({ page }) => {
+    await page.goto('/');
+    await page.getByRole('button', { name: /turn on the camera/i }).click();
+    await expect(page.locator('video')).toHaveJSProperty('readyState', 4, { timeout: 20_000 });
+
+    const controls = page.getByRole('button', { name: 'Backspace' });
+    await expect(controls).toBeVisible();
+
+    await page.getByRole('button', { name: 'Hide controls' }).click();
+    await expect(controls).toBeHidden();
+
+    // The disclaimer is non-dismissible, and "clearing the chrome" is not an
+    // exception to that.
+    await expect(page.getByRole('note')).toBeVisible();
+
+    await page.getByRole('button', { name: 'Show controls' }).click();
+    await expect(controls).toBeVisible();
+  });
+});

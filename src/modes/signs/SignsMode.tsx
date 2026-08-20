@@ -17,6 +17,7 @@
  * transcript filling with noise every time you move between signs.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { MutableRefObject } from 'react';
 import { usePipeline } from '@/vision/pipeline';
 import { useSession, useSettings } from '@/store';
 import { PER_FRAME_DIM, WINDOW_FRAMES, frameFeatures, motionEnergy, resampleWindow } from '@/features/window';
@@ -27,7 +28,25 @@ import type { SignFrame } from './observation';
 import { BUILT_IN_GLOSSES, CONFUSABLE, recognizeSign, signHint } from './signTemplates';
 import { deleteCustomSign, listCustomSigns, putCustomSign } from '@/db/idb';
 
-export function SignsMode({ recorderOpen, onCloseRecorder }: { recorderOpen: boolean; onCloseRecorder(): void }) {
+/**
+ * How far ahead the winner must be before it is treated as a decision.
+ *
+ * Confidence alone is not enough: HELLO and THANK-YOU can both score 0.8 on the
+ * same window, which means the evidence does not separate them, not that either
+ * is right. Committing the higher one is a coin toss reported as certainty.
+ */
+const MIN_MARGIN = 0.12;
+
+export function SignsMode({
+  recorderOpen,
+  onCloseRecorder,
+  onTeachRef,
+}: {
+  recorderOpen: boolean;
+  onCloseRecorder(): void;
+  /** Filled in with the teach callback so the alternates strip can call it. */
+  onTeachRef: MutableRefObject<((label: string) => void) | null>;
+}) {
   const { subscribe, active } = usePipeline();
   const dominantHand = useSettings((s) => s.settings.recognition.dominantHand);
   const threshold = useSettings((s) => s.settings.recognition.confidenceThreshold);
@@ -39,9 +58,12 @@ export function SignsMode({ recorderOpen, onCloseRecorder }: { recorderOpen: boo
   const recentRef = useRef<Float32Array[]>([]);
   const observationRef = useRef<SignFrame[]>([]);
 
+  const lastWindowRef = useRef<Float32Array | null>(null);
+
   const [signs, setSigns] = useState<Prototype[]>([]);
   const [status, setStatus] = useState<'idle' | 'signing'>('idle');
   const [lastMiss, setLastMiss] = useState<string | null>(null);
+  const [taught, setTaught] = useState<{ label: string; examples: number } | null>(null);
 
   const reload = useCallback(async () => {
     const stored = await listCustomSigns();
@@ -55,6 +77,12 @@ export function SignsMode({ recorderOpen, onCloseRecorder }: { recorderOpen: boo
   useEffect(() => {
     void reload();
   }, [reload]);
+
+  useEffect(() => {
+    if (!taught) return;
+    const handle = setTimeout(() => setTaught(null), 4000);
+    return () => clearTimeout(handle);
+  }, [taught]);
 
   const dominant = dominantHand === 'left' ? 'Left' : 'Right';
 
@@ -74,7 +102,7 @@ export function SignsMode({ recorderOpen, onCloseRecorder }: { recorderOpen: boo
 
       const energy = motionEnergy(recent);
       const wasRecording = segmenter.recording;
-      const completed = segmenter.push(features, energy);
+      const completed = segmenter.push(features, energy, frame.hands.length > 0);
       setStatus(segmenter.recording ? 'signing' : 'idle');
       if (!wasRecording && segmenter.recording) {
         // A new sign just started; drop everything before it.
@@ -100,10 +128,20 @@ export function SignsMode({ recorderOpen, onCloseRecorder }: { recorderOpen: boo
         ...builtIn.map((m) => ({ label: m.gloss, confidence: m.confidence })),
       ].sort((a, b) => b.confidence - a.confidence);
 
+      // Keep the window so that correcting the guess can teach it (see teach()).
+      lastWindowRef.current = window;
       setAlternates(candidates.slice(0, 3));
 
       const best = candidates[0];
-      if (best && best.confidence >= threshold) {
+      const runnerUp = candidates[1];
+      // Two signs scoring nearly the same means the evidence does not actually
+      // distinguish them, however high the winner's number is. Committing the
+      // first one would be a coin toss reported as confidence.
+      const decisive = !runnerUp || best.confidence - runnerUp.confidence >= MIN_MARGIN;
+
+      if (best && !decisive) {
+        setLastMiss(`${best.label} or ${runnerUp.label} — too close to call`);
+      } else if (best && best.confidence >= threshold) {
         pushToken(best.label, best.confidence);
         setLastMiss(null);
       } else if (best) {
@@ -116,8 +154,56 @@ export function SignsMode({ recorderOpen, onCloseRecorder }: { recorderOpen: boo
     });
   }, [subscribe, dominant, matcher, segmenter, threshold, pushToken, setAlternates, recorderOpen]);
 
+  /**
+   * Take a correction as training data.
+   *
+   * When the user says "that was actually THANK-YOU", the window that produced
+   * the wrong guess is exactly one labelled example of THANK-YOU as *they*
+   * sign it, in this room, with this camera. Folding it into their custom
+   * prototypes means the recogniser improves through use rather than only
+   * through an explicit recording session — and their examples already outrank
+   * the built-in rules, so one correction has visible effect.
+   */
+  const teach = useCallback(
+    async (label: string) => {
+      const window = lastWindowRef.current;
+      if (!window) return;
+
+      const existing = (await listCustomSigns()).find((s) => s.label === label.toUpperCase());
+      const samples = existing
+        ? [...existing.samples.map((s) => Float32Array.from(s)), window]
+        : [window];
+      // Cap the history: an old example of a sign you have since refined should
+      // not keep dragging the prototype backwards.
+      const kept = samples.slice(-SAMPLES_PER_SIGN * 2);
+
+      const id = existing?.id ?? `${label.toUpperCase().replace(/s+/g, '-')}-${Date.now().toString(36)}`;
+      const prototype = buildPrototype(id, label.toUpperCase(), kept);
+      if (prototype) await putCustomSign(toStored(prototype, kept));
+
+      await reload();
+      setTaught({ label: label.toUpperCase(), examples: kept.length });
+    },
+    [reload],
+  );
+
+  useEffect(() => {
+    onTeachRef.current = teach;
+  }, [teach, onTeachRef]);
+
   return (
     <>
+      {taught && (
+        <div
+          role="status"
+          className="sb-panel sb-on-video absolute inset-x-3 top-28 z-40 mx-auto max-w-sm rounded-2xl px-4 py-2.5 text-xs sm:top-16"
+        >
+          Learned <span className="font-semibold">{taught.label}</span> — {taught.examples} example
+          {taught.examples === 1 ? '' : 's'} of yours now. It will be recognised ahead of the
+          built-in rule.
+        </div>
+      )}
+
       <div className="pointer-events-none absolute top-28 left-3 z-30 hidden max-w-xs sm:block">
         <div className="sb-panel sb-on-video rounded-2xl p-3 text-xs">
           <p className="font-semibold">
@@ -163,7 +249,7 @@ function SignReference() {
   const [open, setOpen] = useState(false);
 
   return (
-    <div className="absolute right-2 bottom-32 z-30 max-w-[min(22rem,calc(100vw-1rem))]">
+    <div className="pointer-events-auto absolute right-2 bottom-32 z-30 max-w-[min(22rem,calc(100vw-1rem))]">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -279,7 +365,7 @@ function SignRecorder({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 p-3 backdrop-blur-sm sm:items-center"
+      className="pointer-events-auto fixed inset-0 z-50 flex items-end justify-center bg-black/50 p-3 backdrop-blur-sm sm:items-center"
       role="dialog"
       aria-modal="true"
       aria-label="Record a custom sign"
