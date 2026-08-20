@@ -46,6 +46,20 @@ export interface DwellInput {
   /** Winning label this frame, or null when no hand / nothing above the floor. */
   label: string | null;
   confidence: number;
+  /**
+   * The full per-letter distribution for this frame, when the caller has one.
+   *
+   * Supplying it switches the smoothing window from voting on hard labels to
+   * averaging the distributions, which is strictly better evidence. Voting
+   * throws away everything except each frame's winner, so five frames that all
+   * said "T at 0.34, A at 0.33" cast five votes for A and none for T; averaging
+   * keeps the near-tie visible and lets the frames that *are* decisive settle
+   * it. In the fist cluster, where the margins are tiny by nature, this is the
+   * difference between a letter that flickers and one that holds.
+   *
+   * Optional so callers with only a label — tests, replay tools — still work.
+   */
+  distribution?: Record<string, number>;
   /** Normalized y of the hand centroid, 0..1. Undefined when no hand is present. */
   handY?: number;
   t: number;
@@ -54,6 +68,8 @@ export interface DwellInput {
 export class DwellCommitter {
   private config: DwellConfig;
   private votes: (string | null)[] = [];
+  /** Recent distributions, when the caller supplies them. Parallel to `votes`. */
+  private history: (Record<string, number> | null)[] = [];
   private current: string | null = null;
   private heldSince = 0;
   private lastCommitAt = -Infinity;
@@ -69,6 +85,7 @@ export class DwellCommitter {
     this.config = { ...this.config, ...config };
     if (this.votes.length > this.config.smoothingWindow) {
       this.votes = this.votes.slice(-this.config.smoothingWindow);
+      this.history = this.history.slice(-this.config.smoothingWindow);
     }
   }
 
@@ -78,6 +95,7 @@ export class DwellCommitter {
 
   reset(): void {
     this.votes = [];
+    this.history = [];
     this.current = null;
     this.heldSince = 0;
     this.lastCommitted = null;
@@ -107,17 +125,27 @@ export class DwellCommitter {
     }
 
     if (!handPresent) {
-      this.votes.push(null);
-      if (this.votes.length > smoothingWindow) this.votes.shift();
+      this.remember(null, null, smoothingWindow);
       this.current = null;
       return { type: 'idle' };
     }
 
     const accepted = input.label && input.confidence >= confidenceThreshold ? input.label : null;
-    this.votes.push(accepted);
-    if (this.votes.length > smoothingWindow) this.votes.shift();
+    this.remember(accepted, input.distribution ?? null, smoothingWindow);
 
-    const winner = majority(this.votes);
+    // Prefer the averaged distribution when the caller gave us one; fall back
+    // to majority voting on hard labels otherwise.
+    const smoothed = this.averaged();
+    let winner: string | null;
+    let confidence: number;
+    if (smoothed) {
+      winner = smoothed.confidence >= confidenceThreshold ? smoothed.label : null;
+      confidence = smoothed.confidence;
+    } else {
+      winner = majority(this.votes);
+      confidence = input.confidence;
+    }
+
     if (winner === null) {
       this.current = null;
       return { type: 'idle' };
@@ -140,15 +168,61 @@ export class DwellCommitter {
       this.lastCommitted = winner;
       this.heldSince = input.t;
       this.votes = [];
-      return { type: 'commit', label: winner, confidence: input.confidence };
+      this.history = [];
+      return { type: 'commit', label: winner, confidence };
     }
 
     return {
       type: 'tracking',
       label: winner,
-      confidence: input.confidence,
+      confidence,
       progress: Math.min(1, held / dwellMs),
     };
+  }
+
+  private remember(
+    label: string | null,
+    distribution: Record<string, number> | null,
+    window: number,
+  ): void {
+    this.votes.push(label);
+    this.history.push(distribution);
+    while (this.votes.length > window) this.votes.shift();
+    while (this.history.length > window) this.history.shift();
+  }
+
+  /**
+   * Mean probability per letter across the window, and its winner.
+   *
+   * Frames with no distribution — no hand, or a caller that does not supply one
+   * — count as zeros rather than being skipped. That is the point: a letter
+   * seen in two frames out of five cannot average above 0.4, so a hand that is
+   * only intermittently tracked never accumulates enough evidence to commit.
+   * Returns null when the window holds no distributions at all, which is the
+   * signal to fall back to hard-label voting.
+   */
+  private averaged(): { label: string; confidence: number } | null {
+    const totals = new Map<string, number>();
+    let seen = 0;
+    for (const dist of this.history) {
+      if (!dist) continue;
+      seen++;
+      for (const [label, p] of Object.entries(dist)) {
+        totals.set(label, (totals.get(label) ?? 0) + p);
+      }
+    }
+    if (seen === 0) return null;
+
+    let best: string | null = null;
+    let bestTotal = 0;
+    for (const [label, total] of totals) {
+      if (total > bestTotal) {
+        best = label;
+        bestTotal = total;
+      }
+    }
+    if (best === null) return null;
+    return { label: best, confidence: bestTotal / this.history.length };
   }
 }
 

@@ -95,6 +95,14 @@ interface SessionState {
   fps: number;
   inferenceMs: number;
   latencyMs: number;
+  /**
+   * Which coordinate space the handshape rules are actually reading. `world`
+   * means MediaPipe returned metric landmarks and the rules are rotation-
+   * robust; `image` means they are working off the projection and will degrade
+   * when the hand angles away from the camera. Worth surfacing, because it
+   * changes what a bad reading means.
+   */
+  handSpace: 'world' | 'image' | null;
 
   /** The letter or word currently being held, before it commits. */
   tentative: { label: string; confidence: number; progress: number } | null;
@@ -111,7 +119,7 @@ interface SessionState {
 
   setPipeline(p: Pipeline, error?: { message: string; remedy: string } | null): void;
   setStats(
-    s: Partial<Pick<SessionState, 'fps' | 'inferenceMs' | 'latencyMs' | 'delegate' | 'visionMode'>>,
+    s: Partial<Pick<SessionState, 'fps' | 'inferenceMs' | 'latencyMs' | 'delegate' | 'visionMode' | 'handSpace'>>,
   ): void;
   setTentative(t: SessionState['tentative']): void;
   setAlternates(a: SessionState['alternates'], distribution?: Record<string, number>): void;
@@ -137,6 +145,7 @@ export const useSession = create<SessionState>((set, get) => ({
   fps: 0,
   inferenceMs: 0,
   latencyMs: 0,
+  handSpace: null,
 
   tentative: null,
   alternates: [],

@@ -328,6 +328,11 @@ implementation against it, so a future session does not have to re-derive it.
   Changing it invalidates every trained artefact and breaks `training/normalize.py`
   parity. `tests/normalize.test.ts` is the spec; `npm test` regenerates the
   Python parity fixtures.
+- Handshape rules read MediaPipe's **world** landmarks; the 63-float feature
+  vector stays in **image** space. `features/handGeometry.ts#geometryOf` is the
+  only place that split is decided — do not re-decide it at a call site. Moving
+  the feature vector into world space would silently invalidate every stored
+  calibration sample and custom sign.
 - Do not lower the default confidence threshold to make a demo look better.
 - Do not add a shipped model without a card in `docs/MODELS.md` and a
   held-out-**signer** evaluation.

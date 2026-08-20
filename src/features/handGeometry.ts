@@ -8,9 +8,9 @@
  *
  * Everything here is a ratio or an angle. Nothing depends on pixels.
  */
-import type { Finger, Point3 } from '@/vision/types';
+import type { Finger, HandFrame, Point3 } from '@/vision/types';
 import { FINGERS, FINGER_CHAIN, HAND_LANDMARK } from '@/vision/types';
-import { dist } from './normalize';
+import { dist, normalizeHand } from './normalize';
 
 export interface FingerState {
   /** 0 = fully curled into the palm, 1 = fully straight. */
@@ -45,14 +45,17 @@ export interface HandGeometry {
    * Where the thumb tip sits along the knuckle line: 0 at the index knuckle,
    * 1 at the pinky knuckle, negative out past the index on the radial side.
    *
-   * This is the feature that separates the fist letters, and it is purely 2D on
-   * purpose. A, T, N and M are all closed fists distinguished only by where the
-   * thumb is, and the obvious way to measure that — depth relative to the palm
-   * plane — leans on MediaPipe's z, which is its least reliable channel and is
-   * worst exactly when the thumb is tucked out of sight. Position across the
-   * knuckles survives that: the thumb tip of an A sits beside the index knuckle,
-   * a T pokes out between index and middle, an N between middle and ring, an M
-   * beyond the ring.
+   * This is the feature that separates the fist letters. A, T, N and M are all
+   * closed fists distinguished only by where the thumb is, and the obvious way
+   * to measure that — depth relative to the palm plane — is the least robust
+   * one, because it is dominated by the z channel exactly when the thumb is
+   * tucked out of sight. Position *along the knuckles* survives that: the thumb
+   * tip of an A sits beside the index knuckle, a T pokes out between index and
+   * middle, an N between middle and ring, an M beyond the ring.
+   *
+   * Fed world landmarks (see {@link geometryOf}) this is a projection onto the
+   * real knuckle line rather than its image shadow, so it no longer shrinks
+   * when the signer angles their hand toward the camera.
    */
   thumbAcross: number;
   /**
@@ -228,4 +231,38 @@ export function handGeometry(normalized: Point3[], rawImage?: Point3[] | null): 
     palmFacing: -palmNormal.z,
     fistness: 1 - (four[0] + four[1] + four[2] + four[3]) / 4,
   };
+}
+
+/**
+ * Geometry for one tracked hand — the entry point every caller should use.
+ *
+ * There is one decision here and it is worth stating plainly: **shape comes
+ * from world landmarks when MediaPipe provides them, orientation always comes
+ * from the image.**
+ *
+ * Image-space landmarks are a projection. A finger pointing at the camera is
+ * foreshortened in x and y, and the z channel that would recover its true
+ * length is a weakly-supervised offset in image units, not a measurement. The
+ * practical result is that an extended finger aimed at the lens reads as a
+ * curled one — which is why D, L, G and the pointing letters degrade the moment
+ * the signer turns their hand. World landmarks are metric and hand-centred, so
+ * chain straightness, fingertip gaps and thumb position all survive rotation.
+ *
+ * What world space cannot tell us is which way the hand points *in the frame*,
+ * because it discards the camera entirely — and P/Q/G/H are distinguished by
+ * exactly that. So `pointing` keeps coming from the raw image landmarks.
+ *
+ * Falls back to image space when `world` is absent, which keeps hand-built test
+ * frames and recorded fixtures working unchanged.
+ */
+export function geometryOf(hand: HandFrame, aspect = 1): HandGeometry {
+  const unrotatedImage = normalizeHand(hand.landmarks, hand.handedness, {
+    aspect,
+    canonicalRotation: false,
+  });
+  // World coordinates are already isotropic, so they need no aspect correction.
+  const shape = hand.world
+    ? normalizeHand(hand.world, hand.handedness, { aspect: 1 })
+    : normalizeHand(hand.landmarks, hand.handedness, { aspect });
+  return handGeometry(shape, unrotatedImage);
 }

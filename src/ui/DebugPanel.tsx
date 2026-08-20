@@ -28,6 +28,7 @@ export function DebugPanel({
   const latencyMs = useSession((s) => s.latencyMs);
   const delegate = useSession((s) => s.delegate);
   const visionMode = useSession((s) => s.visionMode);
+  const handSpace = useSession((s) => s.handSpace);
   const distribution = useSession((s) => s.distribution);
   const [perLetter, setPerLetter] = useState<Record<string, number>>({});
 
@@ -70,7 +71,17 @@ export function DebugPanel({
         <dd className={`text-right ${visionMode === 'inline' ? 'text-[var(--color-signal)]' : ''}`}>
           {visionMode === 'inline' ? 'main thread' : visionMode === 'worker' ? 'worker' : '—'}
         </dd>
+        <dt className="text-[var(--sb-fg-muted)]">Shape read in</dt>
+        <dd className={`text-right ${handSpace === 'image' ? 'text-[var(--color-signal)]' : ''}`}>
+          {handSpace === 'world' ? 'world 3D' : handSpace === 'image' ? 'image 2D' : '—'}
+        </dd>
       </dl>
+      {handSpace === 'image' && (
+        <p className="mt-1.5 text-[10px] leading-relaxed text-[var(--color-signal)]">
+          No metric landmarks from the tracker, so handshape is being read off the flat image.
+          Letters that point toward the camera will read as curled. Keep your palm facing the lens.
+        </p>
+      )}
       <p className="mt-1.5 text-[10px] leading-relaxed text-[var(--sb-fg-muted)]">
         Budget is 150 ms gesture to caption. {budgetOk ? 'Within budget.' : 'Over budget — try power saving off, or a lower resolution.'}
       </p>

@@ -24,6 +24,8 @@ import type { VisionMode } from './client';
 import type { VisionFrame } from './types';
 import { CameraError, listCameras, openCamera, stopStream, toCameraError } from '@/camera/camera';
 import type { CameraDevice } from '@/camera/camera';
+import { FrameSmoother } from '@/features/smoothing';
+import type { SmoothingLevel } from '@/features/smoothing';
 import { useSettings } from '@/store';
 import { useSession } from '@/store';
 
@@ -59,6 +61,13 @@ export function PipelineProvider({ children }: { children: ReactNode }) {
   const clientRef = useRef<VisionClient | null>(null);
   const listenersRef = useRef(new Set<FrameListener>());
   const frameTimesRef = useRef<number[]>([]);
+  // One smoother for the whole app, applied before any subscriber sees a
+  // frame. Filtering here rather than in each mode means the overlay and the
+  // classifier are looking at exactly the same hand — if they diverged, the
+  // skeleton would stop agreeing with the letter it produced.
+  const smootherRef = useRef(new FrameSmoother());
+  const smoothingRef = useRef<SmoothingLevel>('standard');
+  const handSpaceRef = useRef<'world' | 'image' | null>(null);
 
   const [devices, setDevices] = useState<CameraDevice[]>([]);
   const [active, setActive] = useState(false);
@@ -71,6 +80,10 @@ export function PipelineProvider({ children }: { children: ReactNode }) {
   const settings = useSettings((s) => s.settings);
   const setPipelineState = useSession((s) => s.setPipeline);
   const setStats = useSession((s) => s.setStats);
+
+  // Read straight into a ref: changing it must not re-subscribe the frame
+  // listeners or restart the camera.
+  smoothingRef.current = settings.recognition.landmarkSmoothing;
 
   const cameraSettings = settings.camera;
   const needsPose =
@@ -90,6 +103,9 @@ export function PipelineProvider({ children }: { children: ReactNode }) {
   const stop = useCallback(() => {
     clientRef.current?.stop();
     clientRef.current = null;
+    // Stale filter state would ease the first frame of the next session in from
+    // wherever the hand was when this one ended.
+    smootherRef.current.reset();
     stopStream(streamRef.current);
     streamRef.current = null;
     if (videoRef.current) videoRef.current.srcObject = null;
@@ -138,8 +154,9 @@ export function PipelineProvider({ children }: { children: ReactNode }) {
       });
 
       const client = new VisionClient({
-        onFrame(frame, inferenceMs) {
+        onFrame(raw, inferenceMs) {
           const now = performance.now();
+          const frame = smootherRef.current.smooth(raw, smoothingRef.current);
           const times = frameTimesRef.current;
           times.push(now);
           while (times.length > 30) times.shift();
@@ -148,6 +165,13 @@ export function PipelineProvider({ children }: { children: ReactNode }) {
             const measured = span > 0 ? ((times.length - 1) * 1000) / span : 0;
             setFps(measured);
             setStats({ fps: measured, inferenceMs, latencyMs: now - frame.t });
+          }
+          // Only on change: this runs at frame rate, and the value flips at most
+          // once per session.
+          const space = frame.hands.length === 0 ? null : frame.hands[0].world ? 'world' : 'image';
+          if (space !== null && space !== handSpaceRef.current) {
+            handSpaceRef.current = space;
+            setStats({ handSpace: space });
           }
           for (const listener of listenersRef.current) listener(frame, { inferenceMs });
         },

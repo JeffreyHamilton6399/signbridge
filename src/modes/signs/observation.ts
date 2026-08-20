@@ -15,8 +15,7 @@
  */
 import type { HandFrame, Point3, VisionFrame } from '@/vision/types';
 import type { HandGeometry } from '@/features/handGeometry';
-import { handGeometry } from '@/features/handGeometry';
-import { normalizeHand } from '@/features/normalize';
+import { geometryOf } from '@/features/handGeometry';
 import { bodyFrame } from '@/features/window';
 import { HAND_LANDMARK } from '@/vision/types';
 
@@ -79,11 +78,6 @@ export function sampleFrame(frame: VisionFrame, dominantHand: 'Left' | 'Right'):
 
   const toSample = (hand: HandFrame | undefined): HandSample | null => {
     if (!hand) return null;
-    const normalized = normalizeHand(hand.landmarks, hand.handedness, { aspect });
-    const unrotated = normalizeHand(hand.landmarks, hand.handedness, {
-      aspect,
-      canonicalRotation: false,
-    });
     const wrist = hand.landmarks[HAND_LANDMARK.WRIST];
     const pos = body
       ? {
@@ -93,7 +87,9 @@ export function sampleFrame(frame: VisionFrame, dominantHand: 'Left' | 'Right'):
         }
       : { x: (wrist.x - 0.5) * flip, y: wrist.y - 0.5, z: wrist.z };
     return {
-      geometry: handGeometry(normalized, unrotated),
+      // Handshape from world coordinates where available; location, just below,
+      // stays in image space because that is where the body reference lives.
+      geometry: geometryOf(hand, aspect),
       pos,
       zone: body ? zoneOf(pos.y) : 'unknown',
     };

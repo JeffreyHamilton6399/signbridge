@@ -52,6 +52,15 @@ describe('settings migration', () => {
     );
   });
 
+  it('gives an existing install landmark smoothing rather than leaving it off', () => {
+    // Anyone upgrading had no filtering at all, and no filtering is the worse
+    // experience — the setting exists so people can ask for raw tracking, not
+    // so they get it by accident.
+    const migrated = migrateSettings({ version: 3, recognition: { dwellMs: 800 } });
+    expect(migrated.recognition.landmarkSmoothing).toBe('standard');
+    expect(migrated.recognition.dwellMs).toBe(800);
+  });
+
   it('never lets a stored blob turn off on-device-only', () => {
     const migrated = migrateSettings({
       version: SETTINGS_VERSION,

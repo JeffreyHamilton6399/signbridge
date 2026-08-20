@@ -461,3 +461,103 @@ Noted for later: **facial landmarks for signs.** Non-manual markers — eyebrows
 mouth morphemes, head tilt — carry grammar the app currently cannot see at all.
 FaceLandmarker is already vendored and the worker can enable it. Parked
 deliberately; the alphabet should be solid first.
+
+## Reading the hand better, and getting it on screen sooner
+
+Two complaints, one round of work: letters and signs were read wrong too often,
+and the tracked hand felt like it was trailing the real one.
+
+### Handshape now comes from world landmarks
+
+MediaPipe has been returning two versions of every hand all along and the app
+was only reading one. `landmarks` is the projection onto the image; the
+`worldLandmarks` set is metric, hand-centred, and free of perspective.
+
+The rules are written in ratios of small distances — how much of a finger's arc
+length is spanned by the straight line from knuckle to tip, how far the thumb
+tip sits along the knuckle line — and a projection wrecks exactly those. A
+finger pointing at the camera is foreshortened to almost nothing in x and y, so
+an extended finger reads as a curled one; the z channel that would have
+recovered its true length is a weakly-supervised depth offset in image units,
+not a measurement. That is a large part of why D, L, G and the pointing letters
+degraded the instant a hand turned off-axis, and it is fixed by reading the
+coordinates that were already there.
+
+`pointing` still comes from the image, because world space throws the camera
+away and P, Q, G and H are distinguished by nothing except which way the hand
+points in the frame. One function, `geometryOf()`, owns that split so there is
+no second place for it to be decided differently.
+
+**What did not change, deliberately:** the 63-float feature vector. It is the
+space every stored calibration sample, every recorded custom sign and
+`training/normalize.py` are expressed in. Moving it would have thrown away work
+users had already put in, without telling them. Only the rules read world
+coordinates; the learned path is untouched.
+
+### The landmark stream is filtered before anything reads it
+
+A 1€ filter (Casiez et al., CHI 2012) on every landmark channel. Its cutoff
+frequency rises with the measured speed of the point, so a still hand is
+filtered hard and a moving hand is barely filtered at all — which is the one
+combination that helps here. A moving average would have bought the same
+steadiness by adding the lag this work exists to remove.
+
+It is an accuracy feature as much as a latency one. Jitter of a pixel or two on
+a fingertip moves those small-distance ratios enough to flicker the classifier
+between neighbouring letters, and every flicker restarts the dwell timer.
+
+Exposed as **Hand steadiness** in settings, defaulting to standard. Existing
+installs migrate to standard rather than to off: off is what they had, and it is
+the worse experience. The setting is there so someone can *ask* for raw
+tracking, not so they get it by accident.
+
+### The main thread stops taking pictures nobody will look at
+
+The worker already dropped a frame that arrived while it was busy. But by then
+the main thread had paid for a full `createImageBitmap` — a GPU copy and a
+synchronisation point — and thrown the result away. Several times a second, that
+is exactly the kind of main-thread work that makes video stutter.
+
+The client now tracks whether a frame is outstanding and does not take the
+picture at all until the worker answers, with a one-second timeout so a lost
+message cannot stall capture forever. The worker-side drop remains as a
+backstop.
+
+With real backpressure in place, the cost-based frame-rate backoff on the worker
+path went away: it was guessing at a number the in-flight guard now knows
+exactly, and guessing low only widens the gap between hand and caption. The
+inline path keeps its backoff, because there inference really does cost
+main-thread time.
+
+There was also a rate-aliasing cliff worth naming. The capture gate tested
+`elapsed >= interval` exactly, so whenever the computed interval crept just past
+the camera's frame period — 34 ms against a 30 fps camera's 33.3 — every single
+callback failed by a hair and capture halved to 15 fps, precisely when it could
+least afford to. The gate now allows a quarter-interval of slack.
+
+### The overlay was extrapolating from the wrong instant
+
+It predicts forward along the measured velocity to cover the gap between when a
+frame was captured and when it is drawn. It was measuring that gap from when the
+frame *arrived back* on the main thread — which omits the inference and transfer
+cost, i.e. the entire quantity being corrected for. Measuring from `frame.t`
+closes it. Small change, and the most directly visible one in this batch.
+
+### Letters commit on averaged evidence, not on votes
+
+The smoothing window used to hold each frame's winning label and take a
+majority. That throws away everything except the argmax, which is the wrong
+thing to do in the fist cluster where the margins are a few hundredths: five
+frames that each said "T at 0.34, A at 0.36" cast five votes for A and none for
+T. The committer now averages the distributions across the window when the
+caller supplies them, so near-ties stay visible and the frames that are actually
+decisive settle the matter.
+
+Frames with no hand count as zeros rather than being skipped, which gives the
+"no sign" behaviour for free: a letter seen in two frames out of five cannot
+average above 0.4 and never reaches the threshold. Hard-label voting is still
+there for callers that have no distribution to give.
+
+**None of this is a substitute for a trained model or for calibration.** It is a
+better reading of the same evidence, and the honest per-letter numbers in the
+debug panel still come from the user's own samples.

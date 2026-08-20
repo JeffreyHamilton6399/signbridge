@@ -24,8 +24,11 @@ camera stream (MediaStream, main thread)
    │  createImageBitmap(video)         transferable, zero-copy
    ▼
 Web Worker  ── MediaPipe HandLandmarker (+ PoseLandmarker when needed)
-   │            drops frames under load, never queues them
-   │  21 points × 2 hands · 33 pose points
+   │            never asked for a frame while it is busy
+   │  21 image points + 21 world points × 2 hands · 33 pose points
+   ▼
+smoothing.ts   1€ filter per landmark channel
+   │           still hand → filtered hard · moving hand → barely filtered
    ▼
 normalize.ts   aspect-correct → mirror left→right → wrist to origin
    │           → scale by hand span → rotate to canonical roll
@@ -57,9 +60,29 @@ debug panel; the CI latency benchmark fails the build above a p95 of 200 ms.
   landmark frames the browser actually decoded. Firefox falls back to `rAF`.
 - Landmark extraction runs in a worker. It is 8–20 ms of work; on the main
   thread it visibly janks both the video element and the commit animation.
-- **Frames are dropped, never queued.** If the worker is busy the incoming
-  `ImageBitmap` is closed and discarded. A queue would produce captions that lag
+- **Frames are dropped, never queued** — and better, never taken in the first
+  place. The main thread tracks whether a frame is outstanding and skips the
+  `createImageBitmap` entirely while the worker is busy, because that call is a
+  GPU copy and a synchronisation point whose result would only be discarded. The
+  worker still drops a frame that arrives while it is busy, but that is now a
+  backstop rather than the mechanism. A queue would produce captions that lag
   reality, which is worse than missing a frame nobody would have noticed.
+- **Capture is not throttled below what the worker can sustain.** The in-flight
+  guard is exact backpressure, so guessing a sustainable frame rate on top of it
+  only widens the gap between hand and caption. The inline path is the
+  exception: there inference costs main-thread time, so it keeps both a 20 fps
+  ceiling and a cost-based backoff.
+- **Landmarks are filtered before anything reads them** (`features/smoothing.ts`).
+  Tracker jitter reads to a person as lag, because a skeleton shivering around
+  the hand looks like it is chasing it — and it costs accuracy too, since every
+  geometric feature is a ratio of small distances and a jittering fingertip
+  flickers the classifier between neighbouring letters. A moving average would
+  trade that jitter for real lag; the 1€ filter raises its cutoff with measured
+  speed instead, so a still hand is filtered hard and a moving one barely at all.
+- **The overlay predicts from capture time, not arrival time.** Those differ by
+  the whole inference and transfer cost — precisely the lag being corrected for
+  — so measuring from arrival leaves the skeleton one inference behind the hand
+  however high the frame rate goes.
 - Per-frame work on the main thread is deliberately tiny: normalization plus a
   24-template scoring pass, microseconds in total. React state is written only
   when something the user can see changes.
@@ -93,6 +116,29 @@ Order matters:
 For sign-level features the hand *position* is kept separately, relative to the
 shoulders, because location on and around the torso is phonemic: the same
 handshape at the chin and at the chest are different signs.
+
+### Two coordinate spaces, on purpose
+
+MediaPipe returns each hand twice: image-normalized landmarks, and *world*
+landmarks — metric, hand-centred, no perspective. `features/handGeometry.ts`
+exposes one entry point, `geometryOf()`, which resolves the split:
+
+- **Handshape comes from world coordinates.** Image landmarks are a projection,
+  so a finger aimed at the lens is foreshortened and reads as curled; the z
+  channel that would recover its length is a weakly-supervised offset in image
+  units, not a measurement. This is why the pointing letters used to fall apart
+  the moment a hand turned off-axis.
+- **Orientation comes from the image.** World space discards the camera
+  entirely, and P/Q/G/H differ by nothing else but which way the hand points in
+  the frame.
+- **The 63-float feature vector stays in image space.** It is what every stored
+  calibration sample, every custom sign prototype and `training/normalize.py`
+  are expressed in. Moving it would silently invalidate work users have already
+  done, so only the *rules* read world coordinates.
+
+`geometryOf()` falls back to image space when world landmarks are absent, which
+keeps recorded fixtures and hand-built test frames working unchanged. The debug
+panel reports which space is live.
 
 ## Repository layout
 

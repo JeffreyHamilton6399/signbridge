@@ -12,6 +12,21 @@ export type Handedness = 'Left' | 'Right';
 export interface HandFrame {
   /** 21 landmarks, MediaPipe hand topology, image-normalized coordinates. */
   landmarks: Point3[];
+  /**
+   * The same 21 landmarks in MediaPipe's metric world space: origin at the
+   * hand's geometric centre, axes in metres, with no perspective and no image
+   * aspect ratio baked in.
+   *
+   * This is the better input for anything asking *what shape is the hand*.
+   * Image-space z is a weakly-supervised depth offset expressed in image units;
+   * world z is a real coordinate. The handshape rules read this when it is
+   * present. Anything asking *where in the frame is the hand* — auto-space,
+   * body-relative location — must keep using `landmarks`, because world
+   * coordinates deliberately discard position.
+   *
+   * Optional: a recorded fixture or a hand-built test frame may not carry it.
+   */
+  world?: Point3[];
   handedness: Handedness;
   /** MediaPipe's handedness confidence, 0..1. */
   handednessScore: number;

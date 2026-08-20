@@ -47,6 +47,18 @@ const STEPS: Record<number, (s: Blob) => Blob> = {
       version: 3,
     };
   },
+  // v3 -> v4: landmark smoothing became a user setting. Anyone upgrading gets
+  // the default rather than 'off', because 'off' is what they had and it is the
+  // worse experience — the point of shipping it as a setting is that people who
+  // want the rawest possible tracking can still ask for it.
+  3: (s) => {
+    const recognition = (s.recognition as Blob) ?? {};
+    return {
+      ...s,
+      recognition: { ...recognition, landmarkSmoothing: 'standard' },
+      version: 4,
+    };
+  },
 };
 
 /** Recursively fill in anything the stored blob is missing. */

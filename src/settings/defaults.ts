@@ -11,6 +11,7 @@ export const DEFAULT_SETTINGS: Settings = {
     dwellMs: 600,
     autoSpaceMs: 900,
     smoothingWindow: 5,
+    landmarkSmoothing: 'standard',
     wordPrediction: true,
   },
   camera: {

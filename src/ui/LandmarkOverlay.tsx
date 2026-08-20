@@ -16,6 +16,12 @@
  * of that gap. It is capped and damped, because extrapolation amplifies noise
  * and a skeleton that overshoots is worse than one slightly behind.
  *
+ * How far ahead to predict is measured from `frame.t`, the moment the frame was
+ * *captured*, not from when it arrived back here. Those differ by the whole
+ * inference and transfer cost — the very lag being corrected for — so predicting
+ * from arrival time leaves the skeleton permanently one inference behind the
+ * hand and no amount of frame rate hides it.
+ *
  * Drawn from the frame subscription rather than React state — a canvas repaint
  * at 60fps must not cost a React render.
  */
@@ -27,8 +33,16 @@ import type { Point3, VisionFrame } from '@/vision/types';
 
 /** Never predict further ahead than this, however stale the frame is. */
 const MAX_EXTRAPOLATION_MS = 120;
-/** Fraction of the predicted movement actually applied. */
-const EXTRAPOLATION_DAMPING = 0.75;
+/**
+ * Fraction of the predicted movement actually applied.
+ *
+ * Damping exists because extrapolation amplifies whatever noise is in the
+ * velocity estimate. Since landmarks now arrive already filtered (see
+ * features/smoothing.ts) that noise is much smaller, and the filter's own group
+ * delay is one more thing prediction has to make up, so this runs closer to 1
+ * than it used to.
+ */
+const EXTRAPOLATION_DAMPING = 0.9;
 /** Stop trusting a frame entirely once it is this old. */
 const STALE_MS = 400;
 
@@ -127,7 +141,7 @@ export function predict(
   if (dt <= 0) return frame;
   if (frame.hands.length !== previous.frame.hands.length) return frame;
 
-  const ahead = Math.min(now - latest.receivedAt, MAX_EXTRAPOLATION_MS);
+  const ahead = Math.min(now - latest.frame.t, MAX_EXTRAPOLATION_MS);
   if (ahead <= 0) return frame;
   const step = (ahead / dt) * EXTRAPOLATION_DAMPING;
 

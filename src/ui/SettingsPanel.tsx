@@ -130,9 +130,21 @@ export function SettingsPanel({
             format={(v) => `${v} ms`}
             onChange={(v) => patch({ recognition: { autoSpaceMs: clampToRange('autoSpaceMs', v) } })}
           />
+          <Select
+            label="Hand steadiness"
+            hint="Filters jitter out of the tracked hand before anything reads it. Stronger holds a still hand rock steady; lighter follows fast movement more closely."
+            value={settings.recognition.landmarkSmoothing}
+            options={[
+              { value: 'off', label: 'Off — raw tracking' },
+              { value: 'light', label: 'Light' },
+              { value: 'standard', label: 'Standard' },
+              { value: 'strong', label: 'Strong' },
+            ]}
+            onChange={(landmarkSmoothing) => patch({ recognition: { landmarkSmoothing } })}
+          />
           <Slider
             label="Smoothing window"
-            hint="Frames of majority voting. Higher is steadier and slower to react."
+            hint="Frames of evidence averaged before a letter can start committing. Higher is steadier and slower to react."
             value={settings.recognition.smoothingWindow}
             {...RANGES.smoothingWindow}
             format={(v) => `${v} frame${v === 1 ? '' : 's'}`}

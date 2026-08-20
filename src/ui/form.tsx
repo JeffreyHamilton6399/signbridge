@@ -182,7 +182,12 @@ export function Choice<T extends string>({
   );
 }
 
-export function Select({
+/**
+ * Generic in its value so a caller passing a union — 'off' | 'light' | ... —
+ * gets that union back in onChange rather than a bare string it would have to
+ * cast. The options list is what pins the type parameter.
+ */
+export function Select<T extends string>({
   label,
   hint,
   value,
@@ -191,9 +196,9 @@ export function Select({
 }: {
   label: string;
   hint?: string;
-  value: string;
-  options: { value: string; label: string }[];
-  onChange(value: string): void;
+  value: T;
+  options: { value: T; label: string }[];
+  onChange(value: T): void;
 }) {
   const id = useId();
   return (
@@ -204,7 +209,7 @@ export function Select({
       <select
         id={id}
         value={value}
-        onChange={(e) => onChange(e.target.value)}
+        onChange={(e) => onChange(e.target.value as T)}
         className="w-full rounded-xl border border-[var(--sb-panel-edge)] bg-[var(--sb-panel)] px-3 py-2 text-sm outline-none focus:border-[var(--color-signal)]"
       >
         {options.map((option) => (

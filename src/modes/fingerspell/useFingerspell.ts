@@ -164,6 +164,10 @@ export function useFingerspell(enabled: boolean): FingerspellApi {
       const event = committer.feed({
         label: prediction.label,
         confidence: prediction.confidence,
+        // Hand the committer the whole distribution, not just the winner: it
+        // averages across the smoothing window instead of voting, which is what
+        // keeps the near-tie letters from flickering. See debouncer.ts.
+        distribution: prediction.distribution,
         handY: centroid.y,
         t: frame.t,
       });

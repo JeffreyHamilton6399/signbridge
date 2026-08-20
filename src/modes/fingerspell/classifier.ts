@@ -11,8 +11,9 @@
  * nothing is calibrated and no model is loaded, you get (3) alone, which works
  * out of the box and is honest about its confidence.
  */
-import type { HandFrame, Point3 } from '@/vision/types';
-import { handGeometry } from '@/features/handGeometry';
+import type { HandFrame } from '@/vision/types';
+import { geometryOf } from '@/features/handGeometry';
+import type { HandGeometry } from '@/features/handGeometry';
 import { normalizeHand, toFeatureVector, squaredDistance } from '@/features/normalize';
 import { LETTER_TEMPLATES, STATIC_LETTERS } from './letterTemplates';
 import type { LetterPrototypes } from './calibration';
@@ -74,13 +75,12 @@ export class FingerspellClassifier {
    * The ONNX path is exposed separately via {@link predictAsync}.
    */
   predict(hand: HandFrame, aspect = 1): LetterPrediction {
-    const normalized = normalizeHand(hand.landmarks, hand.handedness, { aspect });
-    const unrotated = normalizeHand(hand.landmarks, hand.handedness, {
-      aspect,
-      canonicalRotation: false,
-    });
-    const geom = handGeometry(normalized, unrotated);
-    const features = toFeatureVector(normalized);
+    const geom = geometryOf(hand, aspect);
+    // The 63-float vector stays in image space deliberately. It is the space
+    // every stored calibration sample and every trained artefact lives in
+    // (see normalize.ts and training/normalize.py), so it cannot change without
+    // invalidating them. Only the rules read world coordinates.
+    const features = toFeatureVector(normalizeHand(hand.landmarks, hand.handedness, { aspect }));
 
     const priorProbs = this.templateProbabilities(geom);
     const merged = this.mergePersonal(priorProbs, features);
@@ -109,7 +109,7 @@ export class FingerspellClassifier {
     return this.finish(dist, base.features);
   }
 
-  private templateProbabilities(geom: ReturnType<typeof handGeometry>): Record<string, number> {
+  private templateProbabilities(geom: HandGeometry): Record<string, number> {
     const raw = LETTER_TEMPLATES.map((t) => t.score(geom));
     const probs = softmax(raw, TEMPLATE_TEMPERATURE);
     const out: Record<string, number> = {};
@@ -170,10 +170,5 @@ export function featuresFor(hand: HandFrame, aspect = 1): Float32Array {
 
 /** Exposed for the debug overlay: the raw interpretable geometry of a hand. */
 export function geometryFor(hand: HandFrame, aspect = 1) {
-  const normalized: Point3[] = normalizeHand(hand.landmarks, hand.handedness, { aspect });
-  const unrotated = normalizeHand(hand.landmarks, hand.handedness, {
-    aspect,
-    canonicalRotation: false,
-  });
-  return handGeometry(normalized, unrotated);
+  return geometryOf(hand, aspect);
 }

@@ -145,3 +145,108 @@ describe('DwellCommitter', () => {
     expect(committer.settings.confidenceThreshold).toBe(CONFIG.confidenceThreshold);
   });
 });
+
+/**
+ * Soft voting.
+ *
+ * The old behaviour threw away everything except each frame's winner, which is
+ * exactly the wrong thing to do in the fist cluster, where the margin between
+ * the right letter and the wrong one is a few hundredths.
+ */
+describe('DwellCommitter with distributions', () => {
+  const config = {
+    confidenceThreshold: 0.5,
+    dwellMs: 200,
+    autoSpaceMs: 900,
+    smoothingWindow: 5,
+  };
+
+  /** Feed the same distribution for `frames` frames at 30fps. */
+  function hold(
+    committer: DwellCommitter,
+    distribution: Record<string, number>,
+    frames: number,
+    startT = 0,
+  ) {
+    let event: DwellEvent = { type: 'idle' };
+    for (let i = 0; i < frames; i++) {
+      const top = Object.entries(distribution).sort((a, b) => b[1] - a[1])[0];
+      event = committer.feed({
+        label: top[0],
+        confidence: top[1],
+        distribution,
+        handY: 0.5,
+        t: startT + i * 33,
+      });
+    }
+    return event;
+  }
+
+  it('commits the letter with the most evidence, not the most wins', () => {
+    const committer = new DwellCommitter(config);
+    // Every frame of the first three nominates A by a hair with T close behind,
+    // then the hand settles and the frames become decisive. Majority voting
+    // would have banked three votes for A and none for T.
+    const sequence: Record<string, number>[] = [
+      { A: 0.36, T: 0.34 },
+      { A: 0.36, T: 0.34 },
+      { A: 0.36, T: 0.34 },
+      ...Array.from({ length: 12 }, () => ({ T: 0.9, A: 0.05 })),
+    ];
+    const commits: DwellEvent[] = [];
+    sequence.forEach((distribution, i) => {
+      const top = Object.entries(distribution).sort((a, b) => b[1] - a[1])[0];
+      const event = committer.feed({
+        label: top[0],
+        confidence: top[1],
+        distribution,
+        handY: 0.5,
+        t: i * 33,
+      });
+      if (event.type === 'commit') commits.push(event);
+    });
+    expect(commits.length).toBeGreaterThan(0);
+    const first = commits[0];
+    if (first.type === 'commit') expect(first.label).toBe('T');
+  });
+
+  it('reports the smoothed confidence, not the latest frame', () => {
+    const committer = new DwellCommitter(config);
+    const event = hold(committer, { B: 0.8, D: 0.1 }, 3);
+    expect(event.type).toBe('tracking');
+    // Three frames of 0.8 across a five-frame window: two frames of no evidence
+    // have not happened yet, so the mean is over what has been seen.
+    if (event.type === 'tracking') expect(event.confidence).toBeCloseTo(0.8, 2);
+  });
+
+  it('will not commit on a hand that is only tracked intermittently', () => {
+    const committer = new DwellCommitter(config);
+    let event: DwellEvent = { type: 'idle' };
+    // Two good frames in every five: a mean of at most 0.4, under the 0.5 floor.
+    for (let i = 0; i < 25; i++) {
+      event =
+        i % 5 < 2
+          ? committer.feed({
+              label: 'C',
+              confidence: 0.95,
+              distribution: { C: 0.95 },
+              handY: 0.5,
+              t: i * 33,
+            })
+          : committer.feed({ label: null, confidence: 0, handY: 0.5, t: i * 33 });
+      expect(event.type).not.toBe('commit');
+    }
+  });
+
+  it('still votes on hard labels when no distribution is supplied', () => {
+    const committer = new DwellCommitter(config);
+    const commits: DwellEvent[] = [];
+    for (let i = 0; i < 12; i++) {
+      const event = committer.feed({ label: 'K', confidence: 0.9, handY: 0.5, t: i * 33 });
+      if (event.type === 'commit') commits.push(event);
+    }
+    expect(commits.length).toBeGreaterThan(0);
+    const first = commits[0];
+    if (first.type === 'commit') expect(first.label).toBe('K');
+  });
+});
