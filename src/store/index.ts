@@ -90,6 +90,8 @@ interface SessionState {
   pipeline: Pipeline;
   error: { message: string; remedy: string } | null;
   delegate: 'GPU' | 'CPU' | null;
+  /** Whether landmarking runs in a worker or on the main thread. */
+  visionMode: 'worker' | 'inline' | null;
   fps: number;
   inferenceMs: number;
   latencyMs: number;
@@ -108,7 +110,9 @@ interface SessionState {
   startedAt: number;
 
   setPipeline(p: Pipeline, error?: { message: string; remedy: string } | null): void;
-  setStats(s: Partial<Pick<SessionState, 'fps' | 'inferenceMs' | 'latencyMs' | 'delegate'>>): void;
+  setStats(
+    s: Partial<Pick<SessionState, 'fps' | 'inferenceMs' | 'latencyMs' | 'delegate' | 'visionMode'>>,
+  ): void;
   setTentative(t: SessionState['tentative']): void;
   setAlternates(a: SessionState['alternates'], distribution?: Record<string, number>): void;
   setSuggestions(s: SessionState['suggestions']): void;
@@ -129,6 +133,7 @@ export const useSession = create<SessionState>((set, get) => ({
   pipeline: 'idle',
   error: null,
   delegate: null,
+  visionMode: null,
   fps: 0,
   inferenceMs: 0,
   latencyMs: 0,

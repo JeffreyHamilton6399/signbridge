@@ -19,7 +19,8 @@ import {
   useState,
 } from 'react';
 import type { ReactNode, RefObject } from 'react';
-import { VisionClient } from './client';
+import { VisionClient, describeVisionError } from './client';
+import type { VisionMode } from './client';
 import type { VisionFrame } from './types';
 import { CameraError, listCameras, openCamera, stopStream, toCameraError } from '@/camera/camera';
 import type { CameraDevice } from '@/camera/camera';
@@ -35,6 +36,7 @@ interface PipelineValue {
   starting: boolean;
   error: { message: string; remedy: string } | null;
   delegate: 'GPU' | 'CPU' | null;
+  visionMode: VisionMode | null;
   fps: number;
   start(): Promise<void>;
   stop(): void;
@@ -63,6 +65,7 @@ export function PipelineProvider({ children }: { children: ReactNode }) {
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<PipelineValue['error']>(null);
   const [delegate, setDelegate] = useState<'GPU' | 'CPU' | null>(null);
+  const [visionMode, setVisionMode] = useState<VisionMode | null>(null);
   const [fps, setFps] = useState(0);
 
   const settings = useSettings((s) => s.settings);
@@ -88,6 +91,7 @@ export function PipelineProvider({ children }: { children: ReactNode }) {
     if (videoRef.current) videoRef.current.srcObject = null;
     setActive(false);
     setDelegate(null);
+    setVisionMode(null);
     setPipelineState('idle');
   }, [setPipelineState]);
 
@@ -143,20 +147,22 @@ export function PipelineProvider({ children }: { children: ReactNode }) {
           }
           for (const listener of listenersRef.current) listener(frame, { inferenceMs });
         },
-        onReady(resolvedDelegate) {
+        onReady(resolvedDelegate, _poseEnabled, resolvedMode) {
           setDelegate(resolvedDelegate);
-          setStats({ delegate: resolvedDelegate });
+          setVisionMode(resolvedMode);
+          setStats({ delegate: resolvedDelegate, visionMode: resolvedMode });
           setPipelineState('running');
         },
         onError(message, fatal) {
           if (fatal) {
-            setError({ message, remedy: 'Reload the page. If it persists, switch to WASM in Settings > Performance.' });
-            setPipelineState('error', {
-              message,
-              remedy: 'Reload the page. If it persists, switch to WASM in Settings > Performance.',
-            });
+            const payload = {
+              message: describeVisionError(message),
+              remedy: 'Reload the page. If it keeps failing, switch the backend to WASM in Settings > Performance.',
+            };
+            setError(payload);
+            setPipelineState('error', payload);
           } else {
-            console.warn('Vision worker:', message);
+            console.warn('Vision:', message);
           }
         },
       });
@@ -226,13 +232,14 @@ export function PipelineProvider({ children }: { children: ReactNode }) {
       starting,
       error,
       delegate,
+      visionMode,
       fps,
       start,
       stop,
       subscribe,
       refreshDevices,
     }),
-    [devices, active, starting, error, delegate, fps, start, stop, subscribe, refreshDevices],
+    [devices, active, starting, error, delegate, visionMode, fps, start, stop, subscribe, refreshDevices],
   );
 
   return <PipelineContext.Provider value={value}>{children}</PipelineContext.Provider>;

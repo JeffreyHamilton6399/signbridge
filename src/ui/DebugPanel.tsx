@@ -27,6 +27,7 @@ export function DebugPanel({
   const inferenceMs = useSession((s) => s.inferenceMs);
   const latencyMs = useSession((s) => s.latencyMs);
   const delegate = useSession((s) => s.delegate);
+  const visionMode = useSession((s) => s.visionMode);
   const distribution = useSession((s) => s.distribution);
   const [perLetter, setPerLetter] = useState<Record<string, number>>({});
 
@@ -65,10 +66,21 @@ export function DebugPanel({
         </dd>
         <dt className="text-[var(--sb-fg-muted)]">Delegate</dt>
         <dd className="text-right">{delegate ?? '—'}</dd>
+        <dt className="text-[var(--sb-fg-muted)]">Runs on</dt>
+        <dd className={`text-right ${visionMode === 'inline' ? 'text-[var(--color-signal)]' : ''}`}>
+          {visionMode === 'inline' ? 'main thread' : visionMode === 'worker' ? 'worker' : '—'}
+        </dd>
       </dl>
       <p className="mt-1.5 text-[10px] leading-relaxed text-[var(--sb-fg-muted)]">
         Budget is 150 ms gesture to caption. {budgetOk ? 'Within budget.' : 'Over budget — try power saving off, or a lower resolution.'}
       </p>
+      {visionMode === 'inline' && (
+        <p className="mt-1.5 text-[10px] leading-relaxed text-[var(--color-signal)]">
+          This browser cannot run hand tracking in a background thread, so it is sharing the main
+          one and capped at 20 fps. Expect choppier captions. Safari 17+, Chrome or Edge use the
+          faster path.
+        </p>
+      )}
 
       <h3 className="mt-4 font-semibold">Live distribution</h3>
       <ul className="mt-1.5 space-y-1">

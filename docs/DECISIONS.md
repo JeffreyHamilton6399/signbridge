@@ -153,3 +153,45 @@ With both in place the measured separation is: idle and resting poses top out at
 **0.40**, real signs score **1.00**. `REJECTION_FLOOR` is set to **0.55** — chosen
 from those measurements to sit clearly between them, and pinned by a test that
 fails if the margin closes from either side.
+
+## Safari: "ReferenceError: Can't find variable: document"
+
+Reported from a real device. MediaPipe decides for itself whether to trust
+OffscreenCanvas:
+
+```js
+function Ph() {
+  return typeof OffscreenCanvas !== 'undefined'
+    && (!isSafariAndNotChrome || safariVersion >= 17);
+}
+// and then, when no canvas was supplied:
+canvas ?? (Ph() ? undefined : document.createElement('canvas'))
+```
+
+On Safari 16 and earlier that check fails, so it reaches for `document`, which
+does not exist inside a Web Worker. The whole pipeline died at startup.
+
+Two fixes, because one is not enough:
+
+- **Always pass an explicit canvas.** `landmarkerCore.ts` requires it as a
+  parameter rather than accepting undefined, so the `document` branch is never
+  reachable on any browser. This alone fixes Safari 16.
+- **Fall back to the main thread.** Where `OffscreenCanvas` does not exist at
+  all there is no canvas to hand a worker, so `VisionClient` transparently
+  switches to `InlineLandmarker`, which runs MediaPipe on the main thread where
+  `document` does exist. Capped at 20 fps because it now competes with
+  rendering. The debug panel reports which path is live and says the captions
+  will be choppier — a silent 10 fps drop is worse than an explained one.
+
+MediaPipe handling moved into `landmarkerCore.ts` so the worker and the inline
+runner cannot drift apart.
+
+Also: raw errors no longer reach the UI. `describeVisionError()` maps the known
+failures to something actionable — "Hand tracking could not start in this
+browser. Update to the latest version, or try Chrome or Edge." A stack-trace
+string is a true statement about our code and a useless one to somebody standing
+in front of a camera.
+
+`tests/e2e/fallback.spec.ts` simulates the browser by deleting OffscreenCanvas
+before load, and asserts the app reaches the main-thread path with no
+ReferenceError anywhere in the page or the console.
