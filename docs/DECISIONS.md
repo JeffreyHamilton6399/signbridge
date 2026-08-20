@@ -195,3 +195,39 @@ in front of a camera.
 `tests/e2e/fallback.spec.ts` simulates the browser by deleting OffscreenCanvas
 before load, and asserts the app reaches the main-thread path with no
 ReferenceError anywhere in the page or the console.
+
+## The stale service worker: a shipped fix that could not reach anyone
+
+After the Safari fix went out, the crash was still reported — with the *old*
+wording in the error text. The fix had shipped; the browser was still running
+the previous bundle, because the service worker was serving it and reloading
+just handed back the same cache.
+
+The cause was this, in `main.tsx`:
+
+```ts
+onNeedRefresh() {
+  console.info('A new version of SignBridge is ready. Reload to use it.');
+}
+```
+
+`registerType: 'prompt'` was the right call — swapping the model or the feature
+pipeline under a live session would be worse than a stale build. Prompting into
+the console was not. **A silent update mechanism is indistinguishable from a
+broken one**, and from the outside it looks like the bug was simply never fixed.
+
+Now:
+
+- `UpdatePrompt` is a visible banner with a Reload button. Updates still never
+  apply under a running session; the user decides when.
+- Dismissing is allowed, and a *further* update clears the dismissal — otherwise
+  one "Later" silences every future fix for the life of the tab.
+- The registration polls every 15 minutes and again whenever the tab returns to
+  the foreground, so a long-lived tab learns that a fix shipped.
+- `cleanupOutdatedCaches: true`, so superseded precaches do not accumulate.
+- **Settings → About → "Reload the app from scratch"** unregisters every service
+  worker, deletes every cache and reloads. This is the escape hatch that did not
+  exist at the moment it was needed.
+
+Lesson worth keeping: an offline cache is a way to ship a permanent bug. Any
+update path has to be visible, testable, and have a manual override.

@@ -17,6 +17,7 @@ import { ActionRow, Choice, Section, Select, Slider, Toggle } from './form';
 import { DisclaimerLong } from './Disclaimer';
 import { getVoices, whenVoicesReady } from '@/speech/tts';
 import { clearCalibration, deleteAllData, exportAll, listCustomSigns } from '@/db/idb';
+import { hardReset } from '@/pwa';
 import { sttSupported } from '@/speech/stt';
 
 export function SettingsPanel({
@@ -487,6 +488,12 @@ export function SettingsPanel({
 
         <Section title="About">
           <DisclaimerLong />
+          <ActionRow
+            label="Reload the app from scratch"
+            hint="Clears the cached copy of the app and downloads it again. Use this if an update does not seem to have arrived, or if something is broken after one. Your settings, calibration and transcripts are kept."
+            action="Reload"
+            onClick={() => void hardReset()}
+          />
           <ActionRow
             label="Reset all settings"
             action="Reset"

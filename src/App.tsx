@@ -20,6 +20,7 @@ import { SettingsPanel, downloadFile } from '@/ui/SettingsPanel';
 import { CalibrationFlow } from '@/ui/CalibrationFlow';
 import { DebugPanel } from '@/ui/DebugPanel';
 import { Onboarding } from '@/ui/Onboarding';
+import { UpdatePrompt } from '@/ui/UpdatePrompt';
 import { useFingerspell } from '@/modes/fingerspell/useFingerspell';
 import { SignsMode } from '@/modes/signs/SignsMode';
 import { ReverseMode } from '@/modes/reverse/ReverseMode';
@@ -326,6 +327,7 @@ function Shell() {
           setSignRecorderOpen(true);
         }}
       />
+      <UpdatePrompt />
       <CalibrationFlow
         open={calibrationOpen}
         onClose={() => setCalibrationOpen(false)}

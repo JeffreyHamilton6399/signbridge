@@ -1,7 +1,7 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
-import { registerSW } from 'virtual:pwa-register';
 import App from './App';
+import { initServiceWorker } from './pwa';
 import './index.css';
 
 const root = document.getElementById('root');
@@ -13,18 +13,7 @@ createRoot(root).render(
   </StrictMode>,
 );
 
-// Offline support. `registerType: 'prompt'` means a new build never swaps under
-// a running session - a model change mid-conversation would be worse than a
-// stale build.
-const updateSW = registerSW({
-  onNeedRefresh() {
-    // Deliberately quiet: the update applies on the next full load. Nothing
-    // interrupts a session in progress.
-    console.info('A new version of SignBridge is ready. Reload to use it.');
-  },
-  onOfflineReady() {
-    console.info('SignBridge is ready to work offline.');
-  },
-});
-
-void updateSW;
+// Offline support. A new build never swaps under a running session, but the
+// user is told visibly when one is waiting — see src/pwa.ts for why that
+// matters more than it sounds.
+initServiceWorker();

@@ -16,6 +16,8 @@ export default defineConfig({
         // shell keeps first paint instant; the heavy model assets are cached on
         // first use instead so a cold install isn't a 30 MB download.
         globPatterns: ['**/*.{js,css,html,svg,woff2}'],
+        // Without this, superseded precaches linger and disk use grows every deploy.
+        cleanupOutdatedCaches: true,
         maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
         runtimeCaching: [
           {
