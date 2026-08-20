@@ -1,16 +1,20 @@
 /**
  * Sign mode.
  *
- * Two honest states:
- *   - No shipped model. The 150-sign Phase 2 vocabulary needs a licensed dataset
- *     and a training run, and until that exists this mode does not pretend to
- *     recognise it. The target list is shown as a target.
- *   - Custom signs. Record eight examples of a sign and it is matched by nearest
- *     centroid from then on. This works today, on device, and covers the things
- *     no dataset ever will: your name sign, local signs, workplace jargon.
+ * Two recognisers running side by side:
  *
- * The rejection band in FewShotMatcher is the "no sign / transition" class. It
- * is why this does not fire constantly while you move between signs.
+ *   1. Built-in signs — 28 common signs written as geometry rules
+ *      (signTemplates.ts). No training, no dataset, works on first load.
+ *   2. Custom signs — anything you record yourself, matched by nearest
+ *      centroid. Covers what no dataset ever will: name signs, local signs,
+ *      workplace jargon.
+ *
+ * Your own recordings win ties. They are a model of *you* making *that* sign,
+ * which beats a general rule almost every time.
+ *
+ * Both have an explicit rejection band. When nothing matches well the mode says
+ * nothing rather than emitting its least-bad guess, which is what stops the
+ * transcript filling with noise every time you move between signs.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { usePipeline } from '@/vision/pipeline';
@@ -18,8 +22,10 @@ import { useSession, useSettings } from '@/store';
 import { PER_FRAME_DIM, WINDOW_FRAMES, frameFeatures, motionEnergy, resampleWindow } from '@/features/window';
 import { FewShotMatcher, SAMPLES_PER_SIGN, SignSegmenter, buildPrototype, prototypeFromStored, toStored } from './fewShot';
 import type { Prototype } from './fewShot';
+import { observe, sampleFrame } from './observation';
+import type { SignFrame } from './observation';
+import { BUILT_IN_GLOSSES, CONFUSABLE, recognizeSign, signHint } from './signTemplates';
 import { deleteCustomSign, listCustomSigns, putCustomSign } from '@/db/idb';
-import { SIGN_VOCABULARY } from './vocabulary';
 
 export function SignsMode({ recorderOpen, onCloseRecorder }: { recorderOpen: boolean; onCloseRecorder(): void }) {
   const { subscribe, active } = usePipeline();
@@ -31,9 +37,11 @@ export function SignsMode({ recorderOpen, onCloseRecorder }: { recorderOpen: boo
   const matcher = useMemo(() => new FewShotMatcher(), []);
   const segmenter = useMemo(() => new SignSegmenter(), []);
   const recentRef = useRef<Float32Array[]>([]);
+  const observationRef = useRef<SignFrame[]>([]);
 
   const [signs, setSigns] = useState<Prototype[]>([]);
   const [status, setStatus] = useState<'idle' | 'signing'>('idle');
+  const [lastMiss, setLastMiss] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
     const stored = await listCustomSigns();
@@ -58,17 +66,52 @@ export function SignsMode({ recorderOpen, onCloseRecorder }: { recorderOpen: boo
       recent.push(features);
       if (recent.length > 6) recent.shift();
 
+      // The rule recogniser needs richer per-frame data than the packed feature
+      // vector carries, so it is collected in parallel and trimmed to the same
+      // window the segmenter is accumulating.
+      observationRef.current.push(sampleFrame(frame, dominant));
+      if (observationRef.current.length > WINDOW_FRAMES * 2) observationRef.current.shift();
+
       const energy = motionEnergy(recent);
+      const wasRecording = segmenter.recording;
       const completed = segmenter.push(features, energy);
       setStatus(segmenter.recording ? 'signing' : 'idle');
+      if (!wasRecording && segmenter.recording) {
+        // A new sign just started; drop everything before it.
+        observationRef.current = observationRef.current.slice(-2);
+      }
       if (!completed) return;
 
+      const frames = observationRef.current.slice();
+      observationRef.current = [];
+
+      // 1. The user's own recordings.
       const window = resampleWindow(completed);
-      const matches = matcher.match(window);
-      setAlternates(matches.map((m) => ({ label: m.label, confidence: m.confidence })));
-      const best = matches[0];
+      const custom = matcher.match(window);
+
+      // 2. The built-in rules.
+      const observation = observe(frames);
+      const builtIn = observation ? recognizeSign(observation) : [];
+
+      const candidates = [
+        // A personal prototype gets a deliberate edge: it was recorded by this
+        // signer, in this room, with this camera.
+        ...custom.map((m) => ({ label: m.label, confidence: Math.min(1, m.confidence * 1.15) })),
+        ...builtIn.map((m) => ({ label: m.gloss, confidence: m.confidence })),
+      ].sort((a, b) => b.confidence - a.confidence);
+
+      setAlternates(candidates.slice(0, 3));
+
+      const best = candidates[0];
       if (best && best.confidence >= threshold) {
         pushToken(best.label, best.confidence);
+        setLastMiss(null);
+      } else if (best) {
+        // Near-misses are shown rather than swallowed: knowing it nearly saw
+        // THANK-YOU is far more useful than silence.
+        setLastMiss(`${best.label} (${Math.round(best.confidence * 100)}%, below threshold)`);
+      } else {
+        setLastMiss('no match');
       }
     });
   }, [subscribe, dominant, matcher, segmenter, threshold, pushToken, setAlternates, recorderOpen]);
@@ -76,25 +119,27 @@ export function SignsMode({ recorderOpen, onCloseRecorder }: { recorderOpen: boo
   return (
     <>
       <div className="pointer-events-none absolute top-16 left-3 z-30 max-w-xs">
-        <div className="sb-panel rounded-2xl p-3 text-xs">
+        <div className="sb-panel sb-on-video rounded-2xl p-3 text-xs">
           <p className="font-semibold">
-            {signs.length === 0 ? 'No signs recorded yet' : `${signs.length} custom sign${signs.length === 1 ? '' : 's'}`}
+            {BUILT_IN_GLOSSES.length} built-in signs
+            {signs.length > 0 && ` · ${signs.length} of yours`}
           </p>
           <p className="mt-1 leading-relaxed text-[var(--sb-fg-muted)]">
-            {signs.length === 0
-              ? 'Sign mode recognises signs you record yourself. No general sign model ships with this build — see Settings for why.'
-              : signs.map((s) => s.label).join(' · ')}
+            Rule-based, no training. Accuracy is well below a trained model and several signs are
+            genuinely hard to tell apart — record your own version of any sign it keeps missing.
           </p>
           <p className="mt-2 flex items-center gap-1.5">
             <span
               className={`h-1.5 w-1.5 rounded-full ${status === 'signing' ? 'bg-[var(--color-signal)]' : 'bg-[var(--sb-panel-edge)]'}`}
             />
             <span className="text-[var(--sb-fg-muted)]">
-              {status === 'signing' ? 'Movement detected' : 'Waiting for movement'}
+              {status === 'signing' ? 'Movement detected' : lastMiss ? `Last: ${lastMiss}` : 'Waiting for movement'}
             </span>
           </p>
         </div>
       </div>
+
+      <SignReference />
 
       <SignRecorder
         open={recorderOpen}
@@ -105,6 +150,49 @@ export function SignsMode({ recorderOpen, onCloseRecorder }: { recorderOpen: boo
         active={active}
       />
     </>
+  );
+}
+
+/**
+ * The list of signs that actually work, with how to make each one.
+ *
+ * A recogniser with a 28-sign vocabulary is useless unless you know which 28.
+ * Hiding that in documentation would make the mode look broken.
+ */
+function SignReference() {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div className="absolute right-3 bottom-32 z-30 max-w-sm">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="sb-panel sb-on-video ml-auto flex rounded-xl px-3 py-2 text-xs font-medium"
+      >
+        {open ? 'Hide sign list' : `What it knows (${BUILT_IN_GLOSSES.length})`}
+      </button>
+
+      {open && (
+        <div className="sb-panel sb-on-video sb-scroll mt-2 max-h-[52vh] overflow-y-auto rounded-2xl p-3">
+          <ul className="space-y-2">
+            {BUILT_IN_GLOSSES.map((gloss) => (
+              <li key={gloss} className="text-xs">
+                <span className="font-[family-name:var(--font-display)] text-sm font-bold">
+                  {gloss}
+                </span>
+                <p className="mt-0.5 leading-relaxed text-[var(--sb-fg-muted)]">{signHint(gloss)}</p>
+                {CONFUSABLE[gloss] && (
+                  <p className="mt-0.5 text-[10px] text-[var(--color-alert)]">
+                    often confused with {CONFUSABLE[gloss].join(', ')}
+                  </p>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -189,8 +277,6 @@ function SignRecorder({
 
   if (!open) return null;
 
-  const suggestions = SIGN_VOCABULARY.slice(0, 12).map((v) => v.gloss);
-
   return (
     <div
       className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 p-3 backdrop-blur-sm sm:items-center"
@@ -209,8 +295,9 @@ function SignRecorder({
         {phase === 'naming' && (
           <>
             <p className="mt-2 text-sm leading-relaxed text-[var(--sb-fg-muted)]">
-              Record {SAMPLES_PER_SIGN} examples of a sign and it will be recognised from then on.
-              Names, local signs and jargon are exactly what this is for — no dataset contains them.
+              Record {SAMPLES_PER_SIGN} examples of a sign and it will be recognised from then on,
+              ahead of the built-in rules. Use this for your name sign, local signs, jargon — and
+              for any built-in sign the rules keep getting wrong on you.
             </p>
             <label className="mt-4 block text-xs font-semibold tracking-wide uppercase text-[var(--sb-fg-muted)]">
               What is this sign called?
@@ -222,12 +309,13 @@ function SignRecorder({
               />
             </label>
             <div className="mt-2 flex flex-wrap gap-1.5">
-              {suggestions.map((s) => (
+              {BUILT_IN_GLOSSES.slice(0, 12).map((s) => (
                 <button
                   key={s}
                   type="button"
                   onClick={() => setLabel(s)}
                   className="rounded-lg border border-[var(--sb-panel-edge)] px-2 py-1 text-[11px] hover:border-[var(--color-signal)]"
+                  title={`Override the built-in rule for ${s} with your own version`}
                 >
                   {s}
                 </button>

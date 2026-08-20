@@ -20,6 +20,7 @@ export function Captions() {
   const buffer = useSession((s) => s.buffer);
   const tentative = useSession((s) => s.tentative);
   const display = useSettings((s) => s.settings.display);
+  const mode = useSettings((s) => s.settings.recognition.mode);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const size = CAPTION_SIZE_PX[display.captionSize];
@@ -68,7 +69,9 @@ export function Captions() {
           )}
           {tokens.length === 0 && !buffer && !tentative && (
             <span className="text-[0.42em] font-[family-name:var(--font-ui)] font-medium text-[var(--sb-fg-muted)]">
-              Sign to start. Recognised letters appear here.
+              {mode === 'signs'
+                ? 'Sign to start. Recognised signs appear here.'
+                : 'Sign to start. Recognised letters appear here.'}
             </span>
           )}
         </p>

@@ -18,8 +18,24 @@ What the app actually runs on today:
 |---|---|---|
 | Fingerspelling baseline | 24 hand-written geometric templates over interpretable features (finger extension, tip gaps, thumb depth, pointing direction) | `src/modes/fingerspell/letterTemplates.ts` |
 | Fingerspelling personal head | Multinomial logistic regression, 63 inputs, fitted in-browser | The user's own calibration samples |
+| Built-in signs | 29 hand-written geometry rules over handshape, body-relative location, and movement | `src/modes/signs/signTemplates.ts` |
 | Custom signs | Nearest-centroid prototypes over a 64×134 window | The user's own recordings |
 | Conversation | Nothing | — |
+
+### Accuracy of the built-in signs: unmeasured
+
+There is no held-out-signer evaluation for the 29 rule-based signs, because
+there is no evaluation set. What *is* measured is the separation between a real
+sign and a hand at rest, on synthetic observations: idle poses top out at 0.40,
+clean signs score 1.00, and the rejection floor sits at 0.55 between them
+(`tests/signs.test.ts`).
+
+That is a statement about the rules being internally consistent, **not** about
+how often they are right on a real signer. Expect real-world accuracy to be well
+below a trained model's, to vary hugely with lighting and signing style, and to
+be worst on the pairs listed in `CONFUSABLE`. Anyone reporting a number for this
+mode needs to collect held-out signers first and write it up here like any other
+model.
 
 ---
 

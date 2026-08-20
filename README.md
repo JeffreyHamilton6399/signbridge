@@ -25,7 +25,7 @@ npm run dev          # http://localhost:5173
 The camera needs a secure context, so `localhost` or `https` only.
 
 ```bash
-npm test             # 97 unit tests
+npm test             # 150 unit tests
 npm run typecheck
 npm run build
 npm run e2e          # Playwright, against a fake camera device
@@ -38,9 +38,28 @@ npm run e2e          # Playwright, against a fake camera device
 | Mode | State | What it does |
 |---|---|---|
 | **Fingerspell** | Working | 24 static letters from geometric templates, plus J and Z from a trajectory head. Gets substantially better after calibration. |
-| **Signs** | Working, user-taught | Recognises signs *you* record — name signs, local signs, jargon. No general sign model ships. |
+| **Signs** | Working | 29 common signs out of the box, recognised by geometry rules — no training, no dataset. Plus any sign you record yourself, which takes priority over the rules. |
 | **Reverse** | Working | Real English→ASL gloss translation with rule explanations. Fingerspells everything, since no clips ship. |
 | **Conversation** | Not working, and says so | The CTC decoder and feature pipeline exist; there is no trained model, and continuous ASL recognition is an open research problem. Off by default. |
+
+### There is no chart that makes it recognise every English word
+
+There cannot be. A chart maps a *label* to a *meaning*; recognition has to map
+*a moving hand in your camera* to a label, and no lookup table bridges that.
+
+What does cover every English word is **Fingerspell mode** — spelling is exactly
+the mechanism ASL uses for words that have no sign, and it works today with no
+training at all. Whole-word signs come from two places instead:
+
+- **29 built-in signs** written as geometry rules (`src/modes/signs/signTemplates.ts`),
+  the same approach that carries the manual alphabet. Press *What it knows* in
+  Signs mode for the list and how to make each one.
+- **Anything you record**, at 8 examples per sign, matched by nearest centroid.
+  Yours beat the built-ins, because they were recorded by you, in your room.
+
+Both refuse to guess: a movement that matches nothing produces silence rather
+than the least-bad label. Several built-ins are genuinely confusable — the list
+names each pair.
 
 ### Why no trained models ship
 
@@ -131,7 +150,7 @@ offline mode does not.
 Not a wishlist — a blocker list, from [`docs/ETHICS.md`](docs/ETHICS.md):
 
 - [ ] Deaf signers testing it, compensated, with their feedback visibly changing the product
-- [ ] Deaf review of the 150-sign target vocabulary (regional variation is real)
+- [ ] Deaf review of the 29 built-in signs and the 150-sign target vocabulary (regional variation is real, and several built-ins have more than one correct form)
 - [ ] Credited data sources and consultants
 - [ ] A feedback path that goes somewhere real and gets read
 - [ ] Screen reader and braille display testing with actual users

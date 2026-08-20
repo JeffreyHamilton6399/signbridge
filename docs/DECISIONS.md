@@ -113,3 +113,43 @@ at the bottom edge; the settings toggle knob rendered outside its track (an
 absolutely positioned span with no `left` inherits the button's centred text
 alignment as its static position); and the settings close button's `aria-label`
 did not contain its visible label, which is a WCAG 2.5.3 failure.
+
+## Making Signs mode work without training
+
+The brief's Phase 2 assumed a trained model on a licensed dataset. Asked to make
+sign recognition work with no training at all, the answer was to do for whole
+signs what `letterTemplates.ts` already does for the manual alphabet: write the
+geometry down.
+
+- **29 built-in signs as rules** (`signTemplates.ts`). Chosen for signs that are
+  common *and* geometrically separable from each other. Signs differing only by a
+  handshape the camera cannot resolve are deliberately absent — including them
+  would mean guessing.
+- **A sign is described as handshape + location + movement.** `observation.ts`
+  summarises a window into named quantities ("flat hand", "at the chin", "moved
+  outward", "tapped twice") so a rule reads like a description of the sign.
+- **Location is measured from the shoulders, in shoulder-widths.** Location is
+  phonemic in ASL, and it has to survive the signer sitting closer to the camera.
+- **The scene is mirrored for right-handed signers**, so `+x` always means
+  "outward on the dominant side" and every rule is written once.
+- **User recordings outrank the rules.** A prototype recorded by this signer, in
+  this room, with this camera beats a general rule almost every time.
+
+### Two scoring bugs found by measuring, not by reading
+
+Both were found by dumping raw template scores for idle poses rather than only
+testing the positive cases — the tests that now pin them were written afterwards.
+
+1. **A handshape is a conjunction, not an average.** Averaging clauses let a
+   wrong thumb hide behind four correct fingers: a relaxed, half-open hand scored
+   a perfect 1.0 as a C, so a hand resting near the face read as DRINK at 90%
+   confidence. `handshapes.ts` now scores the worst-satisfied clause.
+2. **A sign is never more certain than its handshape.** Even with (1) fixed, a
+   weak handshape hid behind clauses that are trivially true ("one hand, near the
+   face"). Every template now passes through `gated()`, which caps the score at
+   the handshape score and counts the weakest remaining clause twice.
+
+With both in place the measured separation is: idle and resting poses top out at
+**0.40**, real signs score **1.00**. `REJECTION_FLOOR` is set to **0.55** — chosen
+from those measurements to sit clearly between them, and pinned by a test that
+fails if the margin closes from either side.
