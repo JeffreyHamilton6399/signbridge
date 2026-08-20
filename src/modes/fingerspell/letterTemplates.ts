@@ -41,6 +41,16 @@ export const STATIC_LETTERS = [
 
 export const MOTION_LETTERS = ['J', 'Z'] as const;
 
+/**
+ * The six closed fists, which differ only by where the thumb is — and in T, N
+ * and M the thumb is underneath the fingers, so the camera never sees it.
+ *
+ * Offered as a calibration set of its own. The full twenty-four take about four
+ * minutes, which is long enough that most people never do it; these six take
+ * about ninety seconds and are where nearly all the errors are.
+ */
+export const FIST_CLUSTER = ['A', 'E', 'M', 'N', 'S', 'T'] as const;
+
 export const ALL_LETTERS: readonly string[] = [...STATIC_LETTERS, ...MOTION_LETTERS].sort();
 
 /** The known-hard clusters, surfaced in the UI so users know where to look. */
@@ -83,6 +93,23 @@ const above = (v: number, lo: number, soft = 0.25) => ramp(v, lo - soft, lo);
 const near = (v: number, target: number, tol: number) =>
   clamp01(1 - Math.abs(v - target) / tol);
 
+/**
+ * How well the number of fingers lying over the thumb matches this letter.
+ *
+ * T covers the thumb with one finger, N with two, M with three; A, S and E with
+ * none. That count comes from the fingers alone — see HandGeometry.knuckleBend
+ * — which is the only part of these letters the camera can actually see. Soft
+ * on purpose: it nudges a near-tie the right way and cannot on its own rule a
+ * letter out, because the reasoning behind it has not been checked against real
+ * signers yet.
+ */
+const drapes = (g: HandGeometry, expected: number) =>
+  0.45 + 0.55 * clamp01(1 - Math.abs(g.drapedCount - expected) / 1.6);
+
+/** Where the bend sits: low in E, middling in a fist, high when draped. */
+const bendsAtKnuckle = (g: HandGeometry, target: number) =>
+  0.5 + 0.5 * clamp01(1 - Math.abs(g.curlBalance - target) / 0.22);
+
 function geomean(parts: number[]): number {
   if (parts.length === 0) return 0;
   let logSum = 0;
@@ -114,6 +141,10 @@ export const LETTER_TEMPLATES: readonly LetterTemplate[] = [
       // like an A.
       below(g.thumbAcross, 0.18, 0.2),
       above(g.fingers.thumb.extension, 0.3),
+      // Nothing is lying over the thumb, so no finger is propped up at the
+      // knuckle. Read off the fingers, which are visible, rather than off the
+      // thumb, which in T/N/M is not. See HandGeometry.knuckleBend.
+      drapes(g, 0),
     ]),
   ),
 
@@ -152,6 +183,10 @@ export const LETTER_TEMPLATES: readonly LetterTemplate[] = [
       // Tips come down to meet the thumb, unlike S where they clamp over it.
       below(g.thumbTo.index, 0.62), below(g.thumbTo.middle, 0.72),
       below(Math.abs(g.thumbDepth), 0.3),
+      // Fingertips reach down to the folded thumb, so the knuckles stay open
+      // and the bend piles up past them — the opposite of a draped letter.
+      drapes(g, 0),
+      bendsAtKnuckle(g, 0.24),
     ]),
   ),
 
@@ -222,6 +257,8 @@ export const LETTER_TEMPLATES: readonly LetterTemplate[] = [
       above(g.thumbAcross, 0.62, 0.25),
       below(g.thumbAcross, 1.15, 0.25),
       down(g.fingers.thumb.extension),
+      // Three fingers over the thumb.
+      drapes(g, 3),
     ]),
   ),
 
@@ -231,6 +268,8 @@ export const LETTER_TEMPLATES: readonly LetterTemplate[] = [
       // Between the middle and ring knuckles: further in than T, short of M.
       near(g.thumbAcross, 0.55, 0.3),
       down(g.fingers.thumb.extension),
+      // Two fingers over the thumb.
+      drapes(g, 2),
     ]),
   ),
 
@@ -281,6 +320,8 @@ export const LETTER_TEMPLATES: readonly LetterTemplate[] = [
       // the knuckle line but stays low against it rather than poking through.
       near(g.thumbAcross, 0.45, 0.45),
       below(g.thumbAlong, 1.05, 0.3),
+      // Across the front, so nothing is underneath propping a finger up.
+      drapes(g, 0),
     ]),
   ),
 
@@ -290,6 +331,8 @@ export const LETTER_TEMPLATES: readonly LetterTemplate[] = [
       // Just inside the index knuckle — the shallowest of the tucked thumbs.
       near(g.thumbAcross, 0.3, 0.28),
       down(g.fingers.thumb.extension),
+      // One finger over the thumb.
+      drapes(g, 1),
     ]),
   ),
 

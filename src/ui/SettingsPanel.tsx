@@ -54,11 +54,13 @@ export function SettingsPanel({
   open,
   onClose,
   onRunCalibration,
+  onFixFists,
   onManageSigns,
 }: {
   open: boolean;
   onClose(): void;
   onRunCalibration(): void;
+  onFixFists(): void;
   onManageSigns(): void;
 }) {
   const settings = useSettings((s) => s.settings);
@@ -190,8 +192,14 @@ export function SettingsPanel({
               }
             />
             <ActionRow
-              label="Calibration"
-              hint="Record your own letters. This is the single biggest accuracy improvement available, and it takes about four minutes."
+              label="Fix A, E, M, N, S and T"
+              hint="These six are the same closed fist and account for most wrong letters — in T, N and M the thumb is hidden under the fingers, so the camera never sees the one thing that separates them. Recording your own takes about ninety seconds and is the only thing that reliably fixes it."
+              action="Record"
+              onClick={onFixFists}
+            />
+            <ActionRow
+              label="Full calibration"
+              hint="All 24 static letters, about four minutes. The largest accuracy improvement available anywhere in the app."
               action="Run"
               onClick={onRunCalibration}
             />

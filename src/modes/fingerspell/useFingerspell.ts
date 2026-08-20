@@ -16,7 +16,7 @@ import { FingerspellClassifier } from './classifier';
 import { DwellCommitter } from './debouncer';
 import { MotionLetterDetector } from './motion';
 import { Autocomplete } from './autocomplete';
-import { buildPrototypes, asLetterModel, trainLinearHead } from './calibration';
+import { buildPrototypes, trainLinearHead } from './calibration';
 import type { CalibrationSample } from './calibration';
 import { loadCalibration, loadUserWords, saveUserWords, saveCalibration } from '@/db/idb';
 import { handCentroid, handSpan } from '@/features/normalize';
@@ -52,8 +52,25 @@ export function useFingerspell(enabled: boolean): FingerspellApi {
   const scanTracker = useMemo(() => new ScanQualityTracker(), []);
   const autocompleteRef = useRef<Autocomplete>(new Autocomplete());
   const samplesRef = useRef<CalibrationSample[]>([]);
-  /** Features of the most recent committed letter, for teaching from a fix. */
-  const lastFeaturesRef = useRef<Float32Array | null>(null);
+  /**
+   * Recent per-frame feature vectors, newest last.
+   *
+   * Long enough to cover the longest dwell setting at a low frame rate, so the
+   * whole hold that produced a letter is still in here when it commits.
+   */
+  const recentRef = useRef<Float32Array[]>([]);
+  /**
+   * Features of the frames that actually produced the last committed letter.
+   *
+   * This used to be a single ref overwritten every frame, which meant a
+   * correction filed whatever the hand happened to be doing *when the user
+   * tapped* — typically a second or two later, halfway into the next letter or
+   * on the way back down to rest. So the mechanism billed as the real fix for
+   * the fist cluster was quietly training on mislabelled samples, which is
+   * worse than training on nothing: it drags the prototype for the corrected
+   * letter toward a pose that is not that letter.
+   */
+  const committedFeaturesRef = useRef<Float32Array[]>([]);
   const [taught, setTaught] = useState<{ letter: string; samples: number } | null>(null);
   const [scan, setScanState] = useState<ScanQuality>(GOOD_SCAN);
   // Written every frame, read only when it changes: a hint that re-rendered at
@@ -88,13 +105,13 @@ export function useFingerspell(enabled: boolean): FingerspellApi {
     const stored = await loadCalibration();
     if (!stored) {
       classifier.setPrototypes(null);
-      classifier.setOnnxModel(null);
+      classifier.setLocalHead(null);
       samplesRef.current = [];
       return;
     }
     samplesRef.current = stored.samples;
     classifier.setPrototypes(buildPrototypes(stored.samples));
-    classifier.setOnnxModel(stored.head ? asLetterModel(stored.head) : null);
+    classifier.setLocalHead(stored.head ?? null);
   }, [classifier]);
 
   useEffect(() => {
@@ -155,6 +172,9 @@ export function useFingerspell(enabled: boolean): FingerspellApi {
       if (!hand) {
         scanTracker.update(undefined, frame.t);
         setScan(assessScan({ hand: undefined, frame, speed: 0, palmFacing: 0 }));
+        // Nothing to remember. Keeping the old frames would let the next
+        // letter's commit snapshot a hold that belonged to the previous one.
+        recentRef.current = [];
         const event = committer.feed({ label: null, confidence: 0, t: frame.t });
         if (event.type === 'space') commitWordAndLearn();
         state.setTentative(null);
@@ -163,7 +183,6 @@ export function useFingerspell(enabled: boolean): FingerspellApi {
       }
 
       const prediction = classifier.predict(hand, aspect);
-      lastFeaturesRef.current = prediction.features;
 
       /**
        * Is the camera getting a good enough look for a letter to mean anything?
@@ -184,12 +203,19 @@ export function useFingerspell(enabled: boolean): FingerspellApi {
       });
       setScan(scan);
 
+      // Only frames the camera got a real look at are worth remembering: a
+      // correction files these as training data, and a hand half out of shot
+      // is not an example of any letter.
+      recentRef.current.push(prediction.features);
+      if (recentRef.current.length > RECENT_FRAMES) recentRef.current.shift();
+
       if (scan.unusable) {
         // Withhold. The hand is still there, so no auto-space — it has not been
         // put down, we just cannot read it — but nothing gets committed and the
         // motion buffer is dropped rather than accumulating a trajectory built
         // from landmarks half of which are extrapolated off the frame edge.
         committer.feed({ label: null, confidence: 0, handY: handCentroid(hand.landmarks).y, t: frame.t });
+        recentRef.current.pop();
         motion.reset();
         state.setTentative(null);
         state.setAlternates([], {});
@@ -231,6 +257,10 @@ export function useFingerspell(enabled: boolean): FingerspellApi {
           });
           break;
         case 'commit':
+          // Freeze the hold that produced this letter, before the hand moves
+          // on. If the user corrects it, these are the frames that get the new
+          // label — the ones that were actually the letter they signed.
+          committedFeaturesRef.current = spread(recentRef.current, TEACH_SAMPLES);
           state.appendLetter(event.label, event.confidence);
           speakOut(event.label, event.confidence, true);
           buzz(accessibility.hapticOnCommit);
@@ -292,15 +322,22 @@ export function useFingerspell(enabled: boolean): FingerspellApi {
       state.appendLetter(letter, 1);
       committer.reset();
 
-      const features = lastFeaturesRef.current;
-      if (!features) return;
+      const captured = committedFeaturesRef.current;
+      if (captured.length === 0) return;
+      // Spent: one hold teaches once. Tapping a second alternate corrects the
+      // correction, and filing the same frames under two different letters
+      // would teach the model that they are both.
+      committedFeaturesRef.current = [];
 
-      const sample: CalibrationSample = {
-        label: letter,
-        features: Float32Array.from(features),
-        t: Date.now(),
-      };
-      const samples = [...samplesRef.current, sample];
+      const now = Date.now();
+      const samples = [
+        ...samplesRef.current,
+        ...captured.map<CalibrationSample>((features) => ({
+          label: letter,
+          features: Float32Array.from(features),
+          t: now,
+        })),
+      ];
       samplesRef.current = samples;
 
       // Prototypes are a mean, so they update instantly and shift the decision
@@ -311,7 +348,7 @@ export function useFingerspell(enabled: boolean): FingerspellApi {
 
       void (async () => {
         const head = samples.length >= 8 ? trainLinearHead(samples, { epochs: 150 }) : null;
-        if (head) classifier.setOnnxModel(asLetterModel(head));
+        if (head) classifier.setLocalHead(head);
         await saveCalibration(samples, head);
       })();
     },
@@ -338,6 +375,32 @@ export function useFingerspell(enabled: boolean): FingerspellApi {
     scan,
     samples: samplesRef.current,
   };
+}
+
+/**
+ * Frames of feature history kept. 1500ms is the longest dwell the settings
+ * allow; at 30fps that is 45 frames, and a little headroom costs 63 floats each.
+ */
+const RECENT_FRAMES = 50;
+
+/**
+ * Samples filed per correction.
+ *
+ * More than one, because a hold lasts hundreds of milliseconds and every frame
+ * of it is an example of the letter the user actually signed. Not all of them:
+ * consecutive frames of a held hand are nearly identical, and forty copies of
+ * one pose would swamp a calibration set collected properly.
+ */
+const TEACH_SAMPLES = 3;
+
+/** Evenly spaced picks from a list, oldest first. Returns fewer if it must. */
+export function spread<T>(items: readonly T[], count: number): T[] {
+  if (items.length <= count) return [...items];
+  const out: T[] = [];
+  for (let i = 0; i < count; i++) {
+    out.push(items[Math.round((i * (items.length - 1)) / (count - 1))]);
+  }
+  return out;
 }
 
 /** Choose which hand to read, honouring the dominant-hand preference. */

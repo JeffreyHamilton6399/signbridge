@@ -29,7 +29,7 @@ import { toPlainText } from '@/ui/transcript';
 import { speak, inferPunctuation } from '@/speech/tts';
 import { pruneTranscripts } from '@/db/idb';
 import type { Mode } from '@/settings/schema';
-import { CONFUSION_CLUSTERS } from '@/modes/fingerspell/letterTemplates';
+import { CONFUSION_CLUSTERS, FIST_CLUSTER, STATIC_LETTERS } from '@/modes/fingerspell/letterTemplates';
 
 export default function App() {
   return (
@@ -59,7 +59,9 @@ function Shell() {
   const session = useSession;
 
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [calibrationOpen, setCalibrationOpen] = useState(false);
+  // Which letters calibration should record, or null when it is closed. The
+  // fist cluster gets its own short run — see FIST_CLUSTER.
+  const [calibrating, setCalibrating] = useState<readonly string[] | null>(null);
   const [correctionOpen, setCorrectionOpen] = useState(false);
   const [debugOpen, setDebugOpen] = useState(false);
   const [signRecorderOpen, setSignRecorderOpen] = useState(false);
@@ -399,7 +401,11 @@ function Shell() {
         onClose={() => setSettingsOpen(false)}
         onRunCalibration={() => {
           setSettingsOpen(false);
-          setCalibrationOpen(true);
+          setCalibrating(STATIC_LETTERS);
+        }}
+        onFixFists={() => {
+          setSettingsOpen(false);
+          setCalibrating(FIST_CLUSTER);
         }}
         onManageSigns={() => {
           setSettingsOpen(false);
@@ -409,8 +415,9 @@ function Shell() {
       />
       <UpdatePrompt />
       <CalibrationFlow
-        open={calibrationOpen}
-        onClose={() => setCalibrationOpen(false)}
+        open={calibrating !== null}
+        letters={calibrating ?? STATIC_LETTERS}
+        onClose={() => setCalibrating(null)}
         onFinished={() => void fingerspell.reloadCalibration()}
       />
     </div>

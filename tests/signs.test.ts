@@ -569,3 +569,72 @@ describe('the fist cluster', () => {
     expect(CONFUSION_CLUSTERS.A).toEqual(expect.arrayContaining(['T', 'M', 'N', 'S']));
   });
 });
+
+/**
+ * The fist cluster's second signal.
+ *
+ * Everything above keys on where the thumb tip is, and the thumb tip in T, N
+ * and M is underneath the fingers — MediaPipe does not measure it, it invents
+ * one, and the invention looks like an A. These pin the independent signal
+ * taken from the fingers, which are in plain view: how many of them are lying
+ * over the thumb, read off where each finger's bend sits.
+ *
+ * Reasoned from how the letters are formed, not measured from signers. It is
+ * wired in as a nudge rather than a veto for exactly that reason, and these
+ * tests pin the direction of the nudge, not a threshold.
+ */
+describe('fingers lying over the thumb', () => {
+  const draped = (bends: [number, number, number], thumbAcross: number) =>
+    geometry({ ext: [0.2, 0.05, 0.05, 0.05, 0.05], thumbAcross, knuckleBend: bends });
+
+  const best = (g: ReturnType<typeof geometry>) =>
+    [...LETTER_TEMPLATES]
+      .map((t) => ({ letter: t.letter, score: t.score(g) }))
+      .sort((a, b) => b.score - a.score)[0].letter;
+
+  const scoreOf = (g: ReturnType<typeof geometry>, letter: string) =>
+    LETTER_TEMPLATES.find((t) => t.letter === letter)!.score(g);
+
+  const FIST: [number, number, number] = [0.35, 0.35, 0.35];
+  const ONE_OVER: [number, number, number] = [0.62, 0.35, 0.35];
+  const TWO_OVER: [number, number, number] = [0.62, 0.62, 0.35];
+  const THREE_OVER: [number, number, number] = [0.62, 0.62, 0.62];
+
+  it('counts one, two and three fingers over the thumb', () => {
+    expect(draped(FIST, 0.4).drapedCount).toBeCloseTo(0, 1);
+    expect(draped(ONE_OVER, 0.4).drapedCount).toBeCloseTo(1, 1);
+    expect(draped(TWO_OVER, 0.4).drapedCount).toBeCloseTo(2, 1);
+    expect(draped(THREE_OVER, 0.4).drapedCount).toBeCloseTo(3, 1);
+  });
+
+  it('shifts the T/M balance with the finger count alone', () => {
+    // Thumb position held fixed, so the count is the only thing that changes.
+    // Stated as a ratio because the claim is about direction, not about where
+    // the two happen to cross — that depends on thumbAcross, which is the
+    // measurement this signal exists to back up rather than replace.
+    const one = draped(ONE_OVER, 0.5);
+    const three = draped(THREE_OVER, 0.5);
+    expect(scoreOf(one, 'T') / scoreOf(one, 'M')).toBeGreaterThan(
+      scoreOf(three, 'T') / scoreOf(three, 'M'),
+    );
+  });
+
+  it('raises M and lowers T as more fingers cover the thumb', () => {
+    const one = draped(ONE_OVER, 0.5);
+    const three = draped(THREE_OVER, 0.5);
+    expect(scoreOf(three, 'M')).toBeGreaterThan(scoreOf(one, 'M'));
+    expect(scoreOf(three, 'T')).toBeLessThan(scoreOf(one, 'T'));
+  });
+
+  it('leans away from the tucked letters when nothing is over the thumb', () => {
+    const clenched = draped(FIST, 0.5);
+    const covered = draped(TWO_OVER, 0.5);
+    expect(scoreOf(covered, 'N')).toBeGreaterThan(scoreOf(clenched, 'N'));
+  });
+
+  it('does not override a thumb that is clearly beside the index', () => {
+    // A nudge, not a veto: an unambiguous A stays an A even if the fingers
+    // happen to read as draped.
+    expect(best(geometry({ ext: [0.6, 0.05, 0.05, 0.05, 0.05], thumbAcross: 0, knuckleBend: TWO_OVER }))).toBe('A');
+  });
+});

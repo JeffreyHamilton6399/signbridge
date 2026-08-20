@@ -118,3 +118,87 @@ describe('geometryOf', () => {
     expect(wide.gapIndexMiddle).toBeCloseTo(square.gapIndexMiddle, 10);
   });
 });
+
+/**
+ * Where a finger's bend sits, computed from landmarks rather than from the
+ * synthetic HandGeometry the template tests use. Fingers are built joint by
+ * joint at known flexion angles, so the expected ratio is arithmetic rather
+ * than a guess.
+ */
+describe('knuckleBend', () => {
+  /**
+   * One finger, bent by the given angles at knuckle, middle and end joints.
+   * Straight up from the wrist, curling forward in the y/z plane.
+   */
+  function finger(x: number, angles: [number, number, number]): Point3[] {
+    const lengths = [0.42, 0.28, 0.22];
+    const out: Point3[] = [{ x, y: -1, z: 0 }];
+    let cumulative = 0;
+    let at = out[0];
+    for (let i = 0; i < 3; i++) {
+      cumulative += angles[i];
+      at = {
+        x,
+        y: at.y - lengths[i] * Math.cos(cumulative),
+        z: at.z + lengths[i] * Math.sin(cumulative),
+      };
+      out.push(at);
+    }
+    return out;
+  }
+
+  /** A whole hand whose index/middle/ring share one bend profile. */
+  function handWith(angles: [number, number, number]): HandFrame {
+    const thumb: Point3[] = [
+      { x: -0.35, y: -0.25, z: 0.1 },
+      { x: -0.5, y: -0.5, z: 0.15 },
+      { x: -0.58, y: -0.7, z: 0.2 },
+      { x: -0.62, y: -0.85, z: 0.24 },
+    ];
+    const landmarks: Point3[] = [
+      { x: 0, y: 0, z: 0 },
+      ...thumb,
+      ...finger(-0.25, angles),
+      ...finger(0, angles),
+      ...finger(0.25, angles),
+      ...finger(0.48, angles),
+    ];
+    return { landmarks, world: landmarks, handedness: 'Right', handednessScore: 0.98 };
+  }
+
+  // Knuckle share is angles[0] / sum(angles) by construction.
+  const CLAW: [number, number, number] = [0.7, 1.8, 1.0];
+  const FIST: [number, number, number] = [1.5, 1.6, 1.1];
+  const DRAPE: [number, number, number] = [1.5, 0.9, 0.35];
+
+  it('measures the share of bend at the knuckle', () => {
+    expect(geometryOf(handWith(FIST)).curlBalance).toBeCloseTo(1.5 / 4.2, 2);
+    expect(geometryOf(handWith(DRAPE)).curlBalance).toBeCloseTo(1.5 / 2.75, 2);
+  });
+
+  it('separates a claw, a fist and a draped hand', () => {
+    const claw = geometryOf(handWith(CLAW)).curlBalance;
+    const fist = geometryOf(handWith(FIST)).curlBalance;
+    const drape = geometryOf(handWith(DRAPE)).curlBalance;
+    // E, then A/S, then T/N/M: the axis the fist letters are ordered along.
+    expect(claw).toBeLessThan(fist);
+    expect(fist).toBeLessThan(drape);
+  });
+
+  it('counts fingers as draped only when they actually are', () => {
+    // A soft count, not an integer one: a finger halfway into the band
+    // contributes half. That is deliberate — the band is wide because the
+    // reasoning behind it has not been checked against real signers, and a hard
+    // count would turn every borderline finger into a confident wrong answer.
+    expect(geometryOf(handWith(DRAPE)).drapedCount).toBeGreaterThan(2.2);
+    expect(geometryOf(handWith(FIST)).drapedCount).toBeLessThan(0.2);
+    expect(geometryOf(handWith(CLAW)).drapedCount).toBeLessThan(0.2);
+  });
+
+  it('stays neutral on an open hand, where the ratio means nothing', () => {
+    // Nothing is bent, so the share is 0/0. Answering 0 would let a flat hand
+    // vote against every letter that expects a draped finger.
+    const open = geometryOf(handWith([0, 0, 0]));
+    expect(open.curlBalance).toBeCloseTo(0.5, 5);
+  });
+});

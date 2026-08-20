@@ -1,22 +1,30 @@
 /**
  * Fingerspelling classifier.
  *
- * Three sources of evidence, blended in this order of preference:
- *   1. an ONNX MLP, if one has been shipped in /public/models  (best)
- *   2. the user's own calibration prototypes, if they have run calibration
- *   3. the geometric templates in letterTemplates.ts            (always present)
+ * Sources of evidence, blended in this order of preference:
+ *   1. an ONNX MLP, if one has been shipped in /public/models  (best; none yet)
+ *   2. a softmax head fitted locally from the user's own samples
+ *   3. nearest-centroid prototypes over those same samples
+ *   4. the geometric templates in letterTemplates.ts           (always present)
  *
- * The blend weight for (2) grows with the number of samples the user recorded,
- * so a half-finished calibration nudges the prior instead of overriding it. If
- * nothing is calibrated and no model is loaded, you get (3) alone, which works
- * out of the box and is honest about its confidence.
+ * (2) and (3) both grow in influence with the number of samples recorded, so a
+ * thin calibration nudges the prior instead of overriding it. With nothing
+ * calibrated you get (4) alone, which works out of the box and is honest about
+ * its confidence.
+ *
+ * **Both personal heads are confined to the letters they have seen.** They
+ * redistribute the probability mass already sitting on those letters and leave
+ * every other letter untouched. That is what makes a partial calibration safe,
+ * and it is what lets someone record six fist letters in ninety seconds and get
+ * the benefit without having to sit through all twenty-four.
  */
 import type { HandFrame } from '@/vision/types';
 import { geometryOf } from '@/features/handGeometry';
 import type { HandGeometry } from '@/features/handGeometry';
 import { normalizeHand, toFeatureVector, squaredDistance } from '@/features/normalize';
-import { LETTER_TEMPLATES, STATIC_LETTERS } from './letterTemplates';
-import type { LetterPrototypes } from './calibration';
+import { LETTER_TEMPLATES } from './letterTemplates';
+import { runLinearHead } from './calibration';
+import type { LetterPrototypes, LinearHead } from './calibration';
 
 export interface Candidate {
   label: string;
@@ -39,6 +47,8 @@ export interface LetterPrediction {
 
 /** Sharpness of the template softmax. Lower = more confident, more brittle. */
 const TEMPLATE_TEMPERATURE = 0.085;
+/** Examples of its rarest letter a fitted head needs before it is consulted. */
+const MIN_HEAD_SAMPLES = 3;
 /** Sharpness of the prototype distance softmax, in squared-distance units. */
 const PROTOTYPE_TEMPERATURE = 0.55;
 
@@ -58,6 +68,7 @@ export interface OnnxLetterModel {
 export class FingerspellClassifier {
   private prototypes: LetterPrototypes | null = null;
   private onnx: OnnxLetterModel | null = null;
+  private head: LinearHead | null = null;
 
   setPrototypes(p: LetterPrototypes | null): void {
     this.prototypes = p;
@@ -65,6 +76,26 @@ export class FingerspellClassifier {
 
   setOnnxModel(m: OnnxLetterModel | null): void {
     this.onnx = m;
+  }
+
+  /**
+   * The locally-fitted softmax head.
+   *
+   * This is separate from {@link setOnnxModel} because it is not async: it is a
+   * 24x63 matrix multiply, microseconds, and it can run inside {@link predict}
+   * on the frame path. It was previously routed through the ONNX slot, which
+   * only `predictAsync` consults — and nothing calls `predictAsync`. So the
+   * better of the two personal heads was fitted, stored, and never once used to
+   * classify a frame. Everything personalization did was coming from the
+   * nearest-centroid prototypes alone.
+   *
+   * That matters most for exactly the letters it was meant to fix. Distance to
+   * a centroid weights all 63 dimensions equally, so a T and an A that differ
+   * in a handful of coordinates and agree in the rest come out nearly
+   * equidistant. A fitted head learns which coordinates carry the difference.
+   */
+  setLocalHead(h: LinearHead | null): void {
+    this.head = h;
   }
 
   get hasPersonalModel(): boolean {
@@ -85,7 +116,7 @@ export class FingerspellClassifier {
     const features = toFeatureVector(normalizeHand(hand.landmarks, hand.handedness, { aspect }));
 
     const priorProbs = this.templateProbabilities(geom);
-    const merged = this.mergePersonal(priorProbs, features);
+    const merged = this.mergeHead(this.mergePersonal(priorProbs, features), features);
 
     return this.finish(merged, features, geom);
   }
@@ -132,20 +163,65 @@ export class FingerspellClassifier {
     const negDistances = proto.classes.map((c) => -squaredDistance(features, c.centroid));
     const personal = softmax(negDistances, PROTOTYPE_TEMPERATURE);
 
-    const out: Record<string, number> = { ...prior };
+    // Confined to the letters it has actually seen, exactly as the fitted head
+    // is. This used to scale every letter down by the blend weight and then add
+    // the personal mass back only to the calibrated ones, which meant a
+    // half-finished calibration handed a third of all probability to whichever
+    // letters happened to get recorded, whatever the hand was doing. Anyone who
+    // stopped partway through was quietly making the app worse.
     const totalSamples = proto.classes.reduce((a, c) => a + c.sampleCount, 0);
-    // 5 samples per class is where the personal model starts to be trustworthy;
-    // by ~10 per class it dominates.
-    const coverage = Math.min(1, totalSamples / (STATIC_LETTERS.length * 8));
-    const w = 0.15 + 0.75 * coverage;
+    const perClass = totalSamples / proto.classes.length;
+    // ~5 samples of a letter is where its centroid starts to be trustworthy;
+    // by ~8 it should lead.
+    const w = 0.15 + 0.75 * Math.min(1, perClass / 8);
+    const mass = labels.reduce((a, label) => a + (prior[label] ?? 0), 0);
+    if (mass <= 0) return prior;
 
-    for (const label of Object.keys(out)) out[label] *= 1 - w;
+    const out: Record<string, number> = { ...prior };
     labels.forEach((label, i) => {
-      out[label] = (out[label] ?? 0) + w * personal[i];
+      out[label] = (1 - w) * (prior[label] ?? 0) + w * mass * personal[i];
     });
+    return out;
+  }
 
-    const total = Object.values(out).reduce((a, b) => a + b, 0) || 1;
-    for (const k of Object.keys(out)) out[k] /= total;
+  /**
+   * Fold in the locally-fitted head, over the letters it actually knows.
+   *
+   * The head is confined to its own labels and the mass currently sitting on
+   * them is redistributed according to it; every other letter is left exactly
+   * as it was. That confinement is what makes a partial calibration safe — a
+   * head fitted on six fist letters should sharpen those six and have no
+   * opinion whatsoever about B, and without this it would have to be trained on
+   * all twenty-four or not used at all.
+   */
+  private mergeHead(
+    dist: Record<string, number>,
+    features: Float32Array,
+  ): Record<string, number> {
+    const head = this.head;
+    if (!head || head.labels.length < 2) return dist;
+
+    // Sample counts live on the prototypes, which are built from the same set
+    // in the same breath, so they are the honest measure of how much this head
+    // has actually seen.
+    const counts = new Map(this.prototypes?.classes.map((c) => [c.label, c.sampleCount]) ?? []);
+    const leastSeen = Math.min(...head.labels.map((l) => counts.get(l) ?? 0));
+    // Silent below three examples of its rarest class, then ramping to full
+    // voice at six. A head fitted on one or two samples per class does not
+    // generalise, it memorises, and because it memorises perfectly it comes out
+    // almost one-hot — confident enough to override the prototypes even at a
+    // low blend weight. A floor is the only thing that actually holds it back.
+    if (leastSeen < MIN_HEAD_SAMPLES) return dist;
+    const weight = 0.8 * Math.min(1, leastSeen / 6);
+
+    const probs = runLinearHead(head, features);
+    const mass = head.labels.reduce((a, l) => a + (dist[l] ?? 0), 0);
+    if (mass <= 0) return dist;
+
+    const out = { ...dist };
+    head.labels.forEach((label, i) => {
+      out[label] = (1 - weight) * (dist[label] ?? 0) + weight * mass * probs[i];
+    });
     return out;
   }
 

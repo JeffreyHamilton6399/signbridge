@@ -683,3 +683,96 @@ enough between platforms that the row looked misaligned on some of them. They
 are SVG now. And the mode labels were "A·B·C", "Signs", "Talk", "Text→ASL": a
 glyph string, a word, a word, and an arrow formula, reading as three different
 kinds of thing inside one switcher. They are four plain words.
+
+## Why M and T were still wrong: two bugs and a missing signal
+
+"Corrections become training data" was written up as the real fix for the fist
+cluster. It was not working, for two separate reasons, and both of them were in
+the plumbing rather than in the idea.
+
+### The correction filed the wrong frame
+
+`lastFeaturesRef` was overwritten on every frame and read when the user tapped
+the correction. Those are seconds apart. By the time somebody notices a wrong
+letter, finds it in the strip and taps it, the hand has moved on — halfway into
+the next letter, or back down to rest. So the sample labelled "T" was whatever
+the hand was doing at tap time.
+
+That is worse than filing nothing. It drags the T prototype toward a pose that
+is not a T, so the more diligently someone corrected, the worse their model got.
+
+The frames that produced a letter are now frozen at the moment it commits, and a
+correction files three of them, spread across the hold. Frames the scan-quality
+check rejected are never remembered, and a snapshot is spent once — tapping a
+second alternate corrects the correction rather than teaching both.
+
+### The fitted head was never consulted
+
+Two personal heads are fitted from the same samples: nearest-centroid
+prototypes, and a softmax head. The head was installed through
+`setOnnxModel`, which only `predictAsync` reads — and nothing calls
+`predictAsync`. The frame loop calls `predict`. So the head was fitted, stored,
+reloaded on every launch, and never once used to classify anything. All
+personalization was coming from the prototypes.
+
+That matters most for exactly the letters it was meant to fix. Distance to a
+centroid weights all 63 coordinates equally, so a T and an A that differ in a
+handful and agree in the rest come out nearly equidistant. A fitted head learns
+which coordinates carry the difference. It is a 24×63 matrix multiply —
+microseconds — so it now runs inside `predict`, in its own slot, with the ONNX
+slot left for a model that really would be async.
+
+It stays silent below three examples of its rarest letter. A head fitted on one
+or two samples per class memorises rather than generalises, and because it
+memorises perfectly it comes out almost one-hot — confident enough to override
+the prototypes even at a low blend weight. A ramp alone did not hold it back; a
+floor does.
+
+### Partial calibration was making things worse
+
+The prototype blend scaled every letter down by the blend weight and then added
+the personal mass back only to the calibrated ones. With six of twenty-four
+letters recorded, those six absorbed a third of all probability regardless of
+what the hand was doing. Anyone who started calibration and stopped partway
+through was quietly degrading the app.
+
+Both personal heads are now confined to the letters they have seen: they
+redistribute the mass already sitting on those letters and leave every other
+letter untouched. Two tests pin it, one of them checking exact equality on the
+uncalibrated letters.
+
+This is what makes the next part possible.
+
+### Ninety seconds instead of four minutes
+
+Full calibration is twenty-four letters and about four minutes, which is long
+enough that most people never start. The fist cluster is six letters and about
+ninety seconds, and it is where nearly all the errors are. It is now its own
+entry in Settings, above the full run, and it says why it exists.
+
+### A signal that does not depend on the thumb
+
+Everything keyed on `thumbAcross` is asking about a thumb that, in T, N and M,
+is underneath the fingers. MediaPipe does not measure it; it infers one, and the
+inference is pulled toward the commonest fist, an A.
+
+The fingers, though, are in plain view, and they are doing different things:
+
+- **E** — fingertips reach down to meet a folded thumb, so the knuckles stay
+  relatively open and the bend piles up in the middle and end joints.
+- **A, S** — a real fist: every joint contributes about equally.
+- **T, N, M** — the covering fingers lie *over* the thumb, which props them up.
+  They fold sharply at the knuckle and stay comparatively straight past it — and
+  only the fingers actually covering the thumb do, which is one in T, two in N,
+  three in M.
+
+`knuckleBend` measures what share of each finger's bend happens at the knuckle;
+`drapedCount` turns that into a soft count of fingers lying over the thumb. That
+count maps directly onto T, N and M without consulting the thumb at all.
+
+**This is reasoned from how the letters are formed, not measured from signers.**
+It is wired in as a nudge and never as a veto, so if the reasoning is wrong the
+templates degrade rather than break, and an unambiguous A stays an A. Validating
+it against real recordings is the obvious next step. Until then, personalization
+is still the thing that actually fixes this cluster — which is why the two bugs
+above mattered more than the new feature does.

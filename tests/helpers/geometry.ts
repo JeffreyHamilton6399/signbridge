@@ -39,6 +39,8 @@ export interface GeometrySpec {
   thumbAlong?: number;
   pointing?: number;
   indexMiddleCrossed?: boolean;
+  /** Knuckle-bend share for index, middle, ring. Default: an ordinary fist. */
+  knuckleBend?: [number, number, number];
 }
 
 /** A relaxed, half-open hand — nothing in particular. */
@@ -70,6 +72,12 @@ export function geometry(spec: GeometrySpec = {}): HandGeometry {
     thumbToPalm: 0.8,
     thumbAbduction: spec.thumbAbduction ?? 0.3,
     thumbDepth: spec.thumbDepth ?? 0,
+    knuckleBend: [...(spec.knuckleBend ?? FIST_BEND), 0.35],
+    curlBalance: mean(spec.knuckleBend ?? FIST_BEND),
+    drapedCount: (spec.knuckleBend ?? FIST_BEND).reduce(
+      (a, b) => a + clamp01((b - 0.4) / 0.18),
+      0,
+    ),
     thumbAcross: spec.thumbAcross ?? 0,
     thumbAlong: spec.thumbAlong ?? 1.2,
     palmFacing: 1,
@@ -181,4 +189,19 @@ export function observation(spec: ObservationSpec): SignObservation {
     contacts: spec.contacts ?? (spec.handsContact ? 1 : 0),
     bodyUnknown: spec.bodyUnknown ?? false,
   };
+}
+
+/**
+ * Knuckle-bend share for an ordinary closed fist: the bend is spread across
+ * every joint. Letters where the fingers lie over the thumb push this up; E,
+ * where the fingertips reach down to meet a folded thumb, pushes it down.
+ */
+const FIST_BEND: [number, number, number] = [0.35, 0.35, 0.35];
+
+function mean(v: readonly number[]): number {
+  return v.reduce((a, b) => a + b, 0) / v.length;
+}
+
+function clamp01(v: number): number {
+  return v < 0 ? 0 : v > 1 ? 1 : v;
 }

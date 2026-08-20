@@ -64,6 +64,42 @@ export interface HandGeometry {
    * tucked thumb pokes through at or below the knuckles.
    */
   thumbAlong: number;
+  /**
+   * Where each finger's bend actually is: 0 = all of it beyond the knuckle,
+   * 1 = all of it at the knuckle. Index, middle, ring, pinky.
+   *
+   * This is the fist cluster's only thumb-independent signal, and the reason it
+   * exists is that every other approach to A/S/T/N/M asks about a thumb that is
+   * underneath the fingers and therefore not being measured at all — MediaPipe
+   * infers one, and its inference is pulled toward the commonest fist, an A.
+   *
+   * The fingers, though, are in plain view, and they are doing different things
+   * in each letter:
+   *
+   *   E     fingertips reach down to meet a folded thumb, so the knuckles stay
+   *         relatively open and the bend piles up in the middle and end joints.
+   *         Low.
+   *   A, S  a real fist: every joint contributes about equally. Middle.
+   *   T,N,M the covering fingers lie *over* the thumb, which props them up.
+   *         They fold sharply at the knuckle and stay comparatively straight
+   *         past it. High — and only for the fingers actually covering the
+   *         thumb, which is one in T, two in N, three in M.
+   *
+   * HONEST CAVEAT: this is reasoned from how the letters are formed, not
+   * measured from signers. It is used as a nudge and never as a veto, so if the
+   * reasoning is wrong the templates degrade rather than break. Validating it
+   * against real recordings is the obvious next step, and until that happens
+   * personalization remains the thing that actually fixes this cluster.
+   */
+  knuckleBend: [number, number, number, number];
+  /** Mean of {@link knuckleBend} over index, middle and ring. */
+  curlBalance: number;
+  /**
+   * Soft count of index/middle/ring lying over the thumb: ~1 in T, ~2 in N,
+   * ~3 in M, ~0 in A, S and E. Derived from {@link knuckleBend}, so it says
+   * nothing about the thumb itself — which is exactly the point.
+   */
+  drapedCount: number;
   /** Overall hand direction: unit vector wrist -> middle MCP, canonical space. */
   axis: Point3;
   /**
@@ -126,6 +162,36 @@ function chainStraightness(pts: Point3[], chain: readonly [number, number, numbe
   const arc = dist(pts[a], pts[b]) + dist(pts[b], pts[c]) + dist(pts[c], pts[d]);
   if (arc === 0) return 0;
   return dist(pts[a], pts[d]) / arc;
+}
+
+/**
+ * Band over which a finger counts as lying over the thumb rather than curled
+ * into a fist. Wide on purpose — see the caveat on {@link HandGeometry.knuckleBend}.
+ */
+const DRAPE_LO = 0.4;
+const DRAPE_HI = 0.58;
+
+/** Below this much total bend the hand is open and the ratio means nothing. */
+const MIN_TOTAL_BEND = 0.6;
+
+/**
+ * What fraction of a finger's total bend happens at the knuckle.
+ *
+ * Returns 0.5 — deliberately neutral, not 0 — for a finger that is not bent at
+ * all, because the ratio is 0/0 there and any other answer would let an open
+ * hand vote on a question only a closed one can answer.
+ */
+function bendAtKnuckle(
+  pts: Point3[],
+  chain: readonly [number, number, number, number],
+  wrist: Point3,
+): number {
+  const [mcp, pip, dip, tip] = chain;
+  const knuckle = angleBetween(sub(pts[mcp], wrist), sub(pts[pip], pts[mcp]));
+  const middle = angleBetween(sub(pts[pip], pts[mcp]), sub(pts[dip], pts[pip]));
+  const end = angleBetween(sub(pts[dip], pts[pip]), sub(pts[tip], pts[dip]));
+  const total = knuckle + middle + end;
+  return total < MIN_TOTAL_BEND ? 0.5 : knuckle / total;
 }
 
 /**
@@ -195,6 +261,18 @@ export function handGeometry(normalized: Point3[], rawImage?: Point3[] | null): 
     fingers.pinky.extension,
   ];
 
+  const knuckleBend = (['index', 'middle', 'ring', 'pinky'] as const).map((f) =>
+    bendAtKnuckle(normalized, FINGER_CHAIN[f], normalized[L.WRIST]),
+  ) as [number, number, number, number];
+  // Pinky is excluded: it is the one finger never over the thumb in M, and it
+  // curls along with the others in A and S, so it only adds noise to the axis
+  // these three are separated on.
+  const curlBalance = (knuckleBend[0] + knuckleBend[1] + knuckleBend[2]) / 3;
+  const drapedCount =
+    ramp(knuckleBend[0], DRAPE_LO, DRAPE_HI) +
+    ramp(knuckleBend[1], DRAPE_LO, DRAPE_HI) +
+    ramp(knuckleBend[2], DRAPE_LO, DRAPE_HI);
+
   // R is index and middle crossed. In canonical right-hand space the index sits
   // at negative x relative to the middle; when crossed that order flips while
   // both fingers stay extended and their tips stay close together.
@@ -225,6 +303,9 @@ export function handGeometry(normalized: Point3[], rawImage?: Point3[] | null): 
       (tipOf('thumb').z - palmCentre.z) * palmNormal.z,
     thumbAcross,
     thumbAlong: tipOf('thumb').y,
+    knuckleBend,
+    curlBalance,
+    drapedCount,
     axis: norm(sub(normalized[L.MIDDLE_MCP], normalized[L.WRIST])),
     pointing,
     indexMiddleCrossed,
