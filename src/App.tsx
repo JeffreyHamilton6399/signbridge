@@ -29,6 +29,7 @@ import { toPlainText } from '@/ui/transcript';
 import { speak, inferPunctuation } from '@/speech/tts';
 import { pruneTranscripts } from '@/db/idb';
 import type { Mode } from '@/settings/schema';
+import { CONFUSION_CLUSTERS } from '@/modes/fingerspell/letterTemplates';
 
 export default function App() {
   return (
@@ -66,6 +67,10 @@ function Shell() {
   // propped up and looked at from a distance. Tapping the view clears the
   // controls out of the way — the disclaimer stays, because it always does.
   const [immersive, setImmersive] = useState(false);
+  // A, S, T, M, N and E are all fists that differ only by an occluded thumb, so
+  // the right correction is often not in the top three. Offer the whole cluster.
+  // Read reactively: getState() in the render body would freeze on first paint.
+  const topGuess = useSession((s) => s.alternates[0]?.label);
 
   const mode = settings.recognition.mode;
   const cameraMode = mode === 'fingerspell' || mode === 'signs' || mode === 'conversation';
@@ -160,6 +165,7 @@ function Shell() {
   }
 
   const showOnboarding = cameraMode && !pipeline.active;
+  const confusionOptions = topGuess ? (CONFUSION_CLUSTERS[topGuess] ?? []) : [];
 
   return (
     <div className="relative h-full w-full overflow-hidden">
@@ -310,6 +316,7 @@ function Shell() {
           <div className="flex flex-wrap items-center justify-between gap-2">
             <SuggestionStrip onAccept={fingerspell.acceptSuggestion} />
             <Alternates
+              related={mode === 'fingerspell' ? confusionOptions : []}
               onPick={(label) => {
                 if (mode === 'signs') {
                   session.getState().replaceLastToken(label);
@@ -333,6 +340,20 @@ function Shell() {
               onExport={exportTranscript}
             />
           </div>
+        </div>
+      )}
+
+      {fingerspell.taught && (
+        <div
+          role="status"
+          className="sb-panel sb-on-video absolute inset-x-3 bottom-[9.5rem] z-40 mx-auto max-w-sm rounded-2xl px-4 py-2.5 text-center text-xs"
+        >
+          Learned your{' '}
+          <span className="font-[family-name:var(--font-display)] font-bold">
+            {fingerspell.taught.letter}
+          </span>{' '}
+          — {fingerspell.taught.samples} example
+          {fingerspell.taught.samples === 1 ? '' : 's'}. A few more and it will stop confusing it.
         </div>
       )}
 

@@ -34,6 +34,9 @@ export interface GeometrySpec {
   thumbToPinky?: number;
   thumbAbduction?: number;
   thumbDepth?: number;
+  /** Thumb tip across the knuckle line: 0 = index knuckle, 1 = pinky knuckle. */
+  thumbAcross?: number;
+  thumbAlong?: number;
   pointing?: number;
   indexMiddleCrossed?: boolean;
 }
@@ -67,6 +70,8 @@ export function geometry(spec: GeometrySpec = {}): HandGeometry {
     thumbToPalm: 0.8,
     thumbAbduction: spec.thumbAbduction ?? 0.3,
     thumbDepth: spec.thumbDepth ?? 0,
+    thumbAcross: spec.thumbAcross ?? 0,
+    thumbAlong: spec.thumbAlong ?? 1.2,
     palmFacing: 1,
     axis: dir(),
     pointing: spec.pointing ?? 1,

@@ -9,16 +9,16 @@
  * space. Confidence and the alternates list are pushed to the store because the
  * caption and confidence bar need them, but the landmark frame never is.
  */
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { usePipeline } from '@/vision/pipeline';
 import { useSession, useSettings } from '@/store';
 import { FingerspellClassifier } from './classifier';
 import { DwellCommitter } from './debouncer';
 import { MotionLetterDetector } from './motion';
 import { Autocomplete } from './autocomplete';
-import { buildPrototypes, asLetterModel } from './calibration';
+import { buildPrototypes, asLetterModel, trainLinearHead } from './calibration';
 import type { CalibrationSample } from './calibration';
-import { loadCalibration, loadUserWords, saveUserWords } from '@/db/idb';
+import { loadCalibration, loadUserWords, saveUserWords, saveCalibration } from '@/db/idb';
 import { handCentroid, handSpan } from '@/features/normalize';
 import { speak, speakLetter, inferPunctuation } from '@/speech/tts';
 import type { HandFrame } from '@/vision/types';
@@ -30,6 +30,8 @@ export interface FingerspellApi {
   reloadCalibration(): Promise<void>;
   /** Latest calibration samples, for the debug panel's accuracy report. */
   samples: readonly CalibrationSample[];
+  /** Set briefly after a correction is folded into the personal model. */
+  taught: { letter: string; samples: number } | null;
 }
 
 export function useFingerspell(enabled: boolean): FingerspellApi {
@@ -42,6 +44,9 @@ export function useFingerspell(enabled: boolean): FingerspellApi {
   const motion = useMemo(() => new MotionLetterDetector(), []);
   const autocompleteRef = useRef<Autocomplete>(new Autocomplete());
   const samplesRef = useRef<CalibrationSample[]>([]);
+  /** Features of the most recent committed letter, for teaching from a fix. */
+  const lastFeaturesRef = useRef<Float32Array | null>(null);
+  const [taught, setTaught] = useState<{ letter: string; samples: number } | null>(null);
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
 
@@ -139,6 +144,7 @@ export function useFingerspell(enabled: boolean): FingerspellApi {
       }
 
       const prediction = classifier.predict(hand, aspect);
+      lastFeaturesRef.current = prediction.features;
 
       // Motion letters run alongside the static head and pre-empt it, because a
       // J held still is an I and would otherwise commit as one.
@@ -208,6 +214,21 @@ export function useFingerspell(enabled: boolean): FingerspellApi {
     [commitWordAndLearn, session],
   );
 
+/**
+   * Correcting a letter teaches it.
+   *
+   * This is the only thing that reliably fixes the fist cluster. A, T, M and N
+   * differ solely by where the thumb is, and when the thumb is tucked out of
+   * sight MediaPipe does not measure it — it invents a plausible one, and its
+   * guess tends to look like an A. No rule written over that output can recover
+   * the difference.
+   *
+   * A personal classifier can, because it learns what MediaPipe *actually*
+   * reports for this user's T and M — hallucinated thumb included. As long as
+   * the output differs consistently between the two, a fitted model separates
+   * them where a hand-written rule cannot. So every correction becomes a
+   * labelled sample, and a handful of them is usually enough.
+   */
   const pickAlternate = useCallback(
     (letter: string) => {
       const state = session.getState();
@@ -216,9 +237,38 @@ export function useFingerspell(enabled: boolean): FingerspellApi {
       if (state.buffer.length > 0) state.backspace();
       state.appendLetter(letter, 1);
       committer.reset();
+
+      const features = lastFeaturesRef.current;
+      if (!features) return;
+
+      const sample: CalibrationSample = {
+        label: letter,
+        features: Float32Array.from(features),
+        t: Date.now(),
+      };
+      const samples = [...samplesRef.current, sample];
+      samplesRef.current = samples;
+
+      // Prototypes are a mean, so they update instantly and shift the decision
+      // straight away. The linear head is a fit and can wait for the next
+      // frame's idle moment.
+      classifier.setPrototypes(buildPrototypes(samples));
+      setTaught({ letter, samples: samples.filter((s) => s.label === letter).length });
+
+      void (async () => {
+        const head = samples.length >= 8 ? trainLinearHead(samples, { epochs: 150 }) : null;
+        if (head) classifier.setOnnxModel(asLetterModel(head));
+        await saveCalibration(samples, head);
+      })();
     },
-    [session, committer],
+    [session, committer, classifier],
   );
+
+  useEffect(() => {
+    if (!taught) return;
+    const handle = setTimeout(() => setTaught(null), 3500);
+    return () => clearTimeout(handle);
+  }, [taught]);
 
   const commitSpace = useCallback(() => {
     commitWordAndLearn();
@@ -230,6 +280,7 @@ export function useFingerspell(enabled: boolean): FingerspellApi {
     pickAlternate,
     commitSpace,
     reloadCalibration,
+    taught,
     samples: samplesRef.current,
   };
 }

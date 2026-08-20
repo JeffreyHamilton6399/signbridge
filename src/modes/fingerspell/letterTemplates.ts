@@ -10,11 +10,22 @@
  *
  * HONEST LIMITS. Two clusters are genuinely hard from landmarks alone because
  * the discriminating feature is an occluded thumb:
- *   - M / N / S / T / E  differ only in where the thumb is tucked
- *   - R / U / V          differ by crossing vs. spacing of two fingers
- * MediaPipe hallucinates plausible thumb positions under occlusion, so these
- * letters will be wrong more often than the rest. The debug panel reports
- * per-letter accuracy for exactly this reason. Do not paper over it.
+ *   - A / M / N / S / T / E  differ only in where the thumb is tucked
+ *   - R / U / V              differ by crossing vs. spacing of two fingers
+ *
+ * MediaPipe does not *measure* a hidden thumb, it infers one, and its inference
+ * is drawn toward the commonest fist — which is an A. That is why a T or an M
+ * reads as an A: the landmarks handed to these rules already say A. The fist
+ * letters are therefore keyed on thumbAcross, a purely 2D measure of where the
+ * thumb tip sits along the knuckle line, which degrades more gracefully than
+ * anything using z. It is still inference, not measurement.
+ *
+ * The reliable fix is personalization. A model fitted to what MediaPipe
+ * actually reports for *this* signer's T can separate it from their A even when
+ * both look like an A to a rule, provided the two differ consistently — and
+ * they usually do. Correcting a letter in the UI files it as a training sample
+ * for exactly this reason. The debug panel reports per-letter accuracy. Do not
+ * paper over it.
  *
  * Every rule is written against handGeometry() output, which is scale-, roll-
  * and handedness-invariant.
@@ -96,10 +107,13 @@ export const LETTER_TEMPLATES: readonly LetterTemplate[] = [
   T('A', 'Fist, thumb resting alongside the index finger.', (g) =>
     geomean([
       down(g.four[0]), down(g.four[1]), down(g.four[2]), down(g.four[3]),
-      above(g.fingers.thumb.extension, 0.35),
-      // Thumb sits beside the fist, not across the front of it.
-      below(Math.abs(g.thumbDepth), 0.35),
-      above(g.thumbTo.index, 0.55),
+      // The thumb sits beside the index knuckle, not tucked in among the
+      // fingers. This is what separates A from T, N and M, and it is measured
+      // across the knuckles rather than in depth because MediaPipe invents a
+      // plausible thumb whenever the real one is hidden — and its guess looks
+      // like an A.
+      below(g.thumbAcross, 0.18, 0.2),
+      above(g.fingers.thumb.extension, 0.3),
     ]),
   ),
 
@@ -204,21 +218,19 @@ export const LETTER_TEMPLATES: readonly LetterTemplate[] = [
   T('M', 'Thumb tucked under three fingers.', (g) =>
     geomean([
       down(g.four[0]), down(g.four[1]), down(g.four[2]), down(g.four[3]),
+      // Thumb tip emerges past the ring knuckle, near the pinky.
+      above(g.thumbAcross, 0.62, 0.25),
+      below(g.thumbAcross, 1.15, 0.25),
       down(g.fingers.thumb.extension),
-      // The thumb tip emerges beyond the ring finger.
-      below(g.thumbTo.ring, 0.75),
-      below(g.thumbTo.pinky, 1.0),
-      below(g.thumbDepth, 0.05, 0.3),
     ]),
   ),
 
   T('N', 'Thumb tucked under two fingers.', (g) =>
     geomean([
       down(g.four[0]), down(g.four[1]), down(g.four[2]), down(g.four[3]),
+      // Between the middle and ring knuckles: further in than T, short of M.
+      near(g.thumbAcross, 0.55, 0.3),
       down(g.fingers.thumb.extension),
-      below(g.thumbTo.middle, 0.7),
-      above(g.thumbTo.pinky, 0.7),
-      below(g.thumbDepth, 0.05, 0.3),
     ]),
   ),
 
@@ -265,19 +277,19 @@ export const LETTER_TEMPLATES: readonly LetterTemplate[] = [
     geomean([
       down(g.four[0]), down(g.four[1]), down(g.four[2]), down(g.four[3]),
       down(g.fingers.thumb.extension),
-      // The thumb is in front of the palm plane - this is the S/A distinction.
-      above(g.thumbDepth, 0.18),
-      near(g.thumbTo.index, 0.75, 0.6),
+      // Lying across the front of the fist, so the tip reaches the middle of
+      // the knuckle line but stays low against it rather than poking through.
+      near(g.thumbAcross, 0.45, 0.45),
+      below(g.thumbAlong, 1.05, 0.3),
     ]),
   ),
 
   T('T', 'Fist with the thumb poking between index and middle fingers.', (g) =>
     geomean([
       down(g.four[0]), down(g.four[1]), down(g.four[2]), down(g.four[3]),
+      // Just inside the index knuckle — the shallowest of the tucked thumbs.
+      near(g.thumbAcross, 0.3, 0.28),
       down(g.fingers.thumb.extension),
-      below(g.thumbTo.index, 0.62),
-      above(g.thumbTo.ring, 0.75),
-      above(g.thumbDepth, 0.05, 0.3),
     ]),
   ),
 

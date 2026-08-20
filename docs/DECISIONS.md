@@ -415,3 +415,49 @@ Thirteen controls on a 390px screen. Now eight:
 - The floating **What it knows** list is desktop-only; on a phone the same list
   lives inside the record sheet, where someone choosing what to record wants it,
   and tapping a sign there pre-fills the name.
+
+## "I sign T or M and it writes A"
+
+Correct, reproducible, and the most interesting failure in the project so far.
+
+A, S, T, M, N and E are the same closed fist. The only thing that separates them
+is where the thumb is — and in T, M and N the thumb is *underneath the fingers*,
+which is to say invisible. MediaPipe does not measure a hidden thumb; it infers
+one from the visible hand, and that inference is pulled toward the commonest
+fist in its training data, which is an A.
+
+**So the landmarks handed to the rules already say A.** No rule written over that
+output can recover the difference, and the previous templates made it worse by
+keying on `thumbDepth` — a quantity derived from MediaPipe's z channel, its least
+reliable output, and least reliable precisely when the thumb is occluded.
+
+Two changes:
+
+**A 2D feature instead of a depth one.** `thumbAcross` measures where the thumb
+tip sits along the knuckle line: 0 at the index knuckle, 1 at the pinky. A sits
+beside the index, T pokes through between index and middle, N between middle and
+ring, M past the ring. Ordering the cluster along one axis makes the rules
+monotonic and testable, and it degrades gracefully rather than tracking a noisy
+z. `tests/signs.test.ts` pins the A → T → N → M sweep.
+
+That is a better rule over inferred data. It is not a fix, and it should not be
+described as one.
+
+**Corrections became training data.** This is the part that actually works. A
+model fitted to what MediaPipe *reports* for this signer's T can separate it from
+their A even when both look like an A to a rule — as long as the two outputs
+differ consistently, which they generally do, because the visible fingers do
+differ slightly. Tapping the right letter now files that frame as a labelled
+sample, updates the nearest-centroid prototypes immediately, and refits the
+linear head once there is enough data. A handful of corrections per letter is
+usually enough.
+
+The correction strip also had to change. It offered the second and third
+guesses, but when the model is confident it saw an A, the letter you actually
+signed may be fifth — and a correction you cannot reach is not a correction. It
+now offers the whole confusion cluster whatever the scores say.
+
+Noted for later: **facial landmarks for signs.** Non-manual markers — eyebrows,
+mouth morphemes, head tilt — carry grammar the app currently cannot see at all.
+FaceLandmarker is already vendored and the worker can enable it. Parked
+deliberately; the alphabet should be solid first.

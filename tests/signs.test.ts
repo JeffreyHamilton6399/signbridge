@@ -21,6 +21,7 @@ import {
 } from '@/modes/signs/signTemplates';
 import { SignSegmenter } from '@/modes/signs/fewShot';
 import { DEFAULT_SETTINGS } from '@/settings/defaults';
+import { CONFUSION_CLUSTERS, LETTER_TEMPLATES } from '@/modes/fingerspell/letterTemplates';
 import { PER_FRAME_DIM } from '@/features/window';
 import { SHAPES, geometry, observation } from './helpers/geometry';
 
@@ -519,5 +520,52 @@ describe('segmentation', () => {
     expect(segmenter.calibrated).toBe(true);
     segmenter.recalibrate();
     expect(segmenter.calibrated).toBe(false);
+  });
+});
+
+describe('the fist cluster', () => {
+  /** A closed fist with the thumb somewhere along the knuckle line. */
+  const fist = (thumbAcross: number, thumbExtension = 0.2) =>
+    geometry({ ext: [thumbExtension, 0.05, 0.05, 0.05, 0.05], thumbAcross });
+
+  const best = (g: ReturnType<typeof geometry>) =>
+    [...LETTER_TEMPLATES]
+      .map((t) => ({ letter: t.letter, score: t.score(g) }))
+      .sort((a, b) => b.score - a.score)[0].letter;
+
+  /**
+   * A, T, N and M are the same closed fist; only the thumb moves. These pin the
+   * one measurement that separates them, because the obvious one — depth
+   * relative to the palm — depends on MediaPipe's z, which is invented whenever
+   * the thumb is hidden, and its invention looks like an A.
+   */
+  it('reads a thumb beside the index knuckle as A', () => {
+    expect(best(fist(0.0, 0.6))).toBe('A');
+  });
+
+  it('reads a thumb between index and middle as T, not A', () => {
+    expect(best(fist(0.3))).toBe('T');
+  });
+
+  it('reads a thumb past the ring knuckle as M, not A', () => {
+    expect(best(fist(0.8))).toBe('M');
+  });
+
+  it('places N between T and M', () => {
+    expect(best(fist(0.55))).toBe('N');
+  });
+
+  it('orders the cluster monotonically across the knuckles', () => {
+    // Sweeping the thumb from the index knuckle to the pinky should walk
+    // A -> T -> N -> M and never jump back.
+    const order = ['A', 'T', 'N', 'M'];
+    const seen = [0.0, 0.3, 0.55, 0.8].map((across) => best(fist(across, across < 0.1 ? 0.6 : 0.2)));
+    expect(seen).toEqual(order);
+  });
+
+  it('still offers the rest of the cluster when it picks one', () => {
+    // The correction the user needs is often not in the top three, so the UI
+    // offers the cluster; that map has to stay populated for A.
+    expect(CONFUSION_CLUSTERS.A).toEqual(expect.arrayContaining(['T', 'M', 'N', 'S']));
   });
 });

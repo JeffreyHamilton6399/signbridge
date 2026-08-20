@@ -81,27 +81,53 @@ function DwellRing({ progress, label }: { progress: number; label: string }) {
 }
 
 /**
- * Top-3 alternates. One tap swaps the guess - correction has to be cheaper than
- * re-signing, or nobody corrects anything and the transcript quietly rots.
+ * The correction strip. One tap swaps the guess — correction has to be cheaper
+ * than re-signing, or nobody corrects anything and the transcript quietly rots.
+ *
+ * It offers more than the runners-up. When the winner belongs to a known
+ * confusion cluster, every member of that cluster is offered too, even the ones
+ * that scored near zero. That case is the whole point: if you sign T and the
+ * model is confident it saw an A, T may not be in the top three at all, and a
+ * correction you cannot reach is no correction. In fingerspelling each tap also
+ * becomes a training example, so the letters you fix are the ones that improve.
  */
-export function Alternates({ onPick }: { onPick(label: string): void }) {
+export function Alternates({
+  onPick,
+  related = [],
+}: {
+  onPick(label: string): void;
+  /** Extra labels worth offering regardless of score, e.g. a confusion cluster. */
+  related?: readonly string[];
+}) {
   const alternates = useSession((s) => s.alternates);
   const show = useSettings((s) => s.settings.display.showAlternates);
-  if (!show || alternates.length < 2) return null;
+  if (!show || alternates.length === 0) return null;
+
+  const winner = alternates[0]?.label;
+  const scored = alternates.slice(1, 3).map((a) => ({ label: a.label, confidence: a.confidence }));
+  const seen = new Set([winner, ...scored.map((s) => s.label)]);
+  const cluster = related.filter((label) => !seen.has(label)).map((label) => ({ label, confidence: null }));
+
+  const options = [...scored, ...cluster].slice(0, 5);
+  if (options.length === 0) return null;
 
   return (
-    <div className="flex items-center gap-1.5" aria-label="Other possible letters">
-      {alternates.slice(1, 3).map((alt) => (
+    <div className="flex items-center gap-1.5" aria-label="Correct the last letter">
+      <span className="hidden text-[10px] text-[var(--sb-fg-muted)] sm:inline">Wrong?</span>
+      {options.map((option) => (
         <button
-          key={alt.label}
+          key={option.label}
           type="button"
-          onClick={() => onPick(alt.label)}
+          onClick={() => onPick(option.label)}
+          title={`Correct to ${option.label}`}
           className="sb-panel rounded-lg px-2.5 py-1 text-xs font-semibold tabular-nums transition-colors hover:border-[var(--color-signal)]"
         >
-          <span className="font-[family-name:var(--font-display)] text-sm">{alt.label}</span>
-          <span className="ml-1.5 text-[10px] text-[var(--sb-fg-muted)]">
-            {Math.round(alt.confidence * 100)}%
-          </span>
+          <span className="font-[family-name:var(--font-display)] text-sm">{option.label}</span>
+          {option.confidence !== null && (
+            <span className="ml-1.5 text-[10px] text-[var(--sb-fg-muted)]">
+              {Math.round(option.confidence * 100)}%
+            </span>
+          )}
         </button>
       ))}
     </div>

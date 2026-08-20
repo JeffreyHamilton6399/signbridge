@@ -41,6 +41,26 @@ export interface HandGeometry {
   thumbAbduction: number;
   /** Signed depth of the thumb tip relative to the palm plane. + = toward camera. */
   thumbDepth: number;
+  /**
+   * Where the thumb tip sits along the knuckle line: 0 at the index knuckle,
+   * 1 at the pinky knuckle, negative out past the index on the radial side.
+   *
+   * This is the feature that separates the fist letters, and it is purely 2D on
+   * purpose. A, T, N and M are all closed fists distinguished only by where the
+   * thumb is, and the obvious way to measure that — depth relative to the palm
+   * plane — leans on MediaPipe's z, which is its least reliable channel and is
+   * worst exactly when the thumb is tucked out of sight. Position across the
+   * knuckles survives that: the thumb tip of an A sits beside the index knuckle,
+   * a T pokes out between index and middle, an N between middle and ring, an M
+   * beyond the ring.
+   */
+  thumbAcross: number;
+  /**
+   * Height of the thumb tip along the hand axis, in hand spans. The knuckle row
+   * sits at roughly 1. An A's thumb rides up the side of the index finger; a
+   * tucked thumb pokes through at or below the knuckles.
+   */
+  thumbAlong: number;
   /** Overall hand direction: unit vector wrist -> middle MCP, canonical space. */
   axis: Point3;
   /**
@@ -140,6 +160,18 @@ export function handGeometry(normalized: Point3[], rawImage?: Point3[] | null): 
     z: (normalized[L.INDEX_MCP].z + normalized[L.PINKY_MCP].z + normalized[L.WRIST].z) / 3,
   };
 
+  // Knuckle line, index -> pinky. In canonical right-hand space x increases
+  // across the knuckles in that direction (see normalize.ts).
+  const knuckle = sub(normalized[L.PINKY_MCP], normalized[L.INDEX_MCP]);
+  const knuckleWidth = Math.hypot(knuckle.x, knuckle.y, knuckle.z) || 1;
+  const knuckleAxis = norm(knuckle);
+  const thumbFromIndex = sub(tipOf('thumb'), normalized[L.INDEX_MCP]);
+  const thumbAcross =
+    (thumbFromIndex.x * knuckleAxis.x +
+      thumbFromIndex.y * knuckleAxis.y +
+      thumbFromIndex.z * knuckleAxis.z) /
+    knuckleWidth;
+
   const palmNormal = norm(
     cross(sub(normalized[L.INDEX_MCP], normalized[L.WRIST]), sub(normalized[L.PINKY_MCP], normalized[L.WRIST])),
   );
@@ -188,6 +220,8 @@ export function handGeometry(normalized: Point3[], rawImage?: Point3[] | null): 
       (tipOf('thumb').x - palmCentre.x) * palmNormal.x +
       (tipOf('thumb').y - palmCentre.y) * palmNormal.y +
       (tipOf('thumb').z - palmCentre.z) * palmNormal.z,
+    thumbAcross,
+    thumbAlong: tipOf('thumb').y,
     axis: norm(sub(normalized[L.MIDDLE_MCP], normalized[L.WRIST])),
     pointing,
     indexMiddleCrossed,
