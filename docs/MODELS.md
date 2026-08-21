@@ -18,7 +18,7 @@ What the app actually runs on today:
 |---|---|---|
 | Fingerspelling baseline | 24 hand-written geometric templates over interpretable features (finger extension, tip gaps, thumb depth, pointing direction) | `src/modes/fingerspell/letterTemplates.ts` |
 | Fingerspelling personal head | MLP, 63 -> 48 -> K, fitted in-browser on augmented samples | The user's own calibration samples |
-| Built-in signs | 49 hand-written geometry rules over handshape, body-relative location, movement and orientation | `src/modes/signs/signTemplates.ts` |
+| Built-in signs | 97 hand-written geometry rules over handshape, body-anchored location, movement and orientation | `src/modes/signs/signTemplates.ts` |
 | Custom signs | Nearest-centroid prototypes over a 64×134 window | The user's own recordings |
 | Conversation | Nothing | — |
 

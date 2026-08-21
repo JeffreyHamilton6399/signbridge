@@ -56,7 +56,15 @@ export type HandshapeName =
   | 'w'
   | 'y'
   | 'thumbUp'
-  | 'bent';
+  | 'bent'
+  | 'l'
+  | 'f'
+  | 'babyO'
+  | 'x'
+  | 'three'
+  | 'bentV'
+  | 'r'
+  | 'four';
 
 /** Flat hand, fingers straight and together. Letter B. */
 export function flat(g: HandGeometry): number {
@@ -196,8 +204,96 @@ export function bent(g: HandGeometry): number {
   ]);
 }
 
+
+/**
+ * Thumb and index out at a right angle, other three down. Letter L.
+ *
+ * The abduction clause is what makes it an L rather than a D with a lazy thumb:
+ * the angle between thumb and index is the shape.
+ */
+export function l(g: HandGeometry): number {
+  return all([
+    ext(g.four[0]),
+    curled(g.four[1]), curled(g.four[2]), curled(g.four[3]),
+    over(g.fingers.thumb.extension, 0.55),
+    over(g.thumbAbduction, 0.5),
+  ]);
+}
+
+/** Thumb and index pinched into a circle, other three up. Letter F. */
+export function f(g: HandGeometry): number {
+  return all([
+    under(g.thumbTo.index, 0.45),
+    ext(g.four[1]), ext(g.four[2]), ext(g.four[3]),
+    under(g.four[0], 0.8),
+  ]);
+}
+
+/** Thumb and index pinched, other three down. Baby-O: 'who', small quantities. */
+export function babyO(g: HandGeometry): number {
+  return all([
+    under(g.thumbTo.index, 0.45),
+    curled(g.four[1]), curled(g.four[2]), curled(g.four[3]),
+  ]);
+}
+
+/**
+ * Index hooked over, everything else closed. Letter X.
+ *
+ * Distinguished from a fist by the index being half-curled rather than curled,
+ * which is a narrow margin on noisy landmarks — X-based signs are the least
+ * reliable in this file and are marked confusable with their fist neighbours.
+ */
+export function x(g: HandGeometry): number {
+  return all([
+    halfCurled(g.four[0]),
+    curled(g.four[1]), curled(g.four[2]), curled(g.four[3]),
+    under(g.fingers.thumb.extension, 0.55),
+  ]);
+}
+
+/** Thumb, index and middle out and spread. Number 3, and 'car' in some forms. */
+export function three(g: HandGeometry): number {
+  return all([
+    ext(g.four[0]), ext(g.four[1]),
+    curled(g.four[2]), curled(g.four[3]),
+    over(g.fingers.thumb.extension, 0.55),
+    over(g.thumbAbduction, 0.4),
+    over(g.gapIndexMiddle, 0.4),
+  ]);
+}
+
+/** Index and middle bent at the knuckles, apart. Bent-V: 'sit', 'look-at'. */
+export function bentV(g: HandGeometry): number {
+  return all([
+    halfCurled(g.four[0]), halfCurled(g.four[1]),
+    curled(g.four[2]), curled(g.four[3]),
+    over(g.gapIndexMiddle, 0.45),
+  ]);
+}
+
+/** Index and middle crossed. Letter R, and 'friend' hooked. */
+export function r(g: HandGeometry): number {
+  return all([
+    ext(g.four[0]), ext(g.four[1]),
+    curled(g.four[2]), curled(g.four[3]),
+    g.indexMiddleCrossed ? 1 : 0.05,
+  ]);
+}
+
+/** Four fingers straight and together, thumb across the palm. Number 4 / B without thumb. */
+export function four(g: HandGeometry): number {
+  return all([
+    ext(g.four[0]), ext(g.four[1]), ext(g.four[2]), ext(g.four[3]),
+    over(g.gapIndexMiddle, 0.3),
+    under(g.gapIndexMiddle, 0.75),
+    under(g.fingers.thumb.extension, 0.5),
+  ]);
+}
+
 const SHAPES: Record<HandshapeName, (g: HandGeometry) => number> = {
   flat, fist, flatO, c, index, ily, open, claw, h, v, w, y, thumbUp, bent,
+  l, f, babyO, x, three, bentV, r, four,
 };
 
 /** Score one named handshape. */

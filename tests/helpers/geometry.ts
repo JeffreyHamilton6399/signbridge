@@ -8,7 +8,8 @@
  */
 import type { HandGeometry, FingerState } from '@/features/handGeometry';
 import type { Finger, Point3 } from '@/vision/types';
-import type { HandSample, HandTrack, SignObservation, Zone } from '@/modes/signs/observation';
+import { BODY_ANCHORS, NOMINAL_ANCHORS } from '@/modes/signs/observation';
+import type { AnchorDistances, BodyAnchor, HandSample, HandTrack, SignObservation, Zone } from '@/modes/signs/observation';
 
 const dir = (x = 0, y = 1, z = 0): Point3 => ({ x, y, z });
 
@@ -125,12 +126,63 @@ export const SHAPES = {
   y: () => geometry({ ext: [0.9, 0.05, 0.05, 0.05, 0.95], thumbToPinky: 2.0, thumbAbduction: 0.8 }),
   thumbUp: () => geometry({ ext: [0.9, 0.05, 0.05, 0.05, 0.05], thumbAbduction: 0.6 }),
   bent: () => geometry({ ext: [0.3, 0.5, 0.5, 0.5, 0.5], gapIndexMiddle: 0.2 }),
+  l: () => geometry({ ext: [0.95, 0.95, 0.05, 0.05, 0.05], thumbAbduction: 0.85 }),
+  f: () => geometry({ ext: [0.5, 0.3, 0.95, 0.95, 0.95], thumbToIndex: 0.25, gapMiddleRing: 0.35 }),
+  babyO: () => geometry({ ext: [0.5, 0.1, 0.05, 0.05, 0.05], thumbToIndex: 0.25 }),
+  x: () => geometry({ ext: [0.2, 0.5, 0.05, 0.05, 0.05], gapIndexMiddle: 0.2 }),
+  three: () => geometry({ ext: [0.9, 0.95, 0.95, 0.05, 0.05], thumbAbduction: 0.7, gapIndexMiddle: 0.6 }),
+  bentV: () => geometry({ ext: [0.2, 0.5, 0.5, 0.05, 0.05], gapIndexMiddle: 0.7 }),
+  r: () => geometry({ ext: [0.2, 0.9, 0.9, 0.05, 0.05], gapIndexMiddle: 0.15, indexMiddleCrossed: true }),
+  four: () => geometry({ ext: [0.2, 0.95, 0.95, 0.95, 0.95], gapIndexMiddle: 0.45, gapMiddleRing: 0.45, gapRingPinky: 0.45 }),
 } as const;
 
 // ---------------------------------------------------------------------------
 
-export function sample(shape: HandGeometry, pos: { x: number; y: number }, zone: Zone): HandSample {
-  return { geometry: shape, pos: { ...pos, z: 0 }, zone };
+/**
+ * How far past the wrist the working end of the hand reaches, in shoulder
+ * widths.
+ *
+ * The real pipeline measures anchor distance from the fingertips, thumb and
+ * middle knuckle — whichever got closest — because that is what touches the
+ * chin. A test case gives a wrist position, so this stands in for the rest of
+ * the hand. Without it every canonical observation would read as holding its
+ * hand a hand's-length away from the place the sign is made.
+ *
+ * Kept well under the spacing between neighbouring anchors. At 0.22 a hand at
+ * the eye was also 'at' the ear — they sit 0.23 apart — so CRY and DEAF, HEAR
+ * and THINK all collapsed into each other. A blur wider than the thing being
+ * measured is not a measurement.
+ */
+const HAND_REACH = 0.14;
+/** Distance that counts as touching. */
+const TOUCHING = 0.04;
+
+/**
+ * Anchor distances for a hand at `pos`.
+ *
+ * Derived from {@link NOMINAL_ANCHORS} — the same table the real pipeline falls
+ * back to when the pose face landmarks are not visible — so a canonical
+ * observation and a real one mean the same thing by "at the chin". Pass `at` to
+ * assert contact with one anchor explicitly rather than relying on the
+ * position to imply it.
+ */
+function anchorDistances(pos: { x: number; y: number }, at?: BodyAnchor): AnchorDistances {
+  const out = {} as AnchorDistances;
+  for (const anchor of BODY_ANCHORS) {
+    const n = NOMINAL_ANCHORS[anchor];
+    const d = Math.hypot(pos.x - n.x, pos.y - n.y);
+    out[anchor] = anchor === at ? TOUCHING : Math.max(TOUCHING, d - HAND_REACH);
+  }
+  return out;
+}
+
+export function sample(
+  shape: HandGeometry,
+  pos: { x: number; y: number },
+  zone: Zone,
+  at?: BodyAnchor,
+): HandSample {
+  return { geometry: shape, pos: { ...pos, z: 0 }, zone, near: anchorDistances(pos, at) };
 }
 
 export interface TrackSpec {
@@ -147,6 +199,10 @@ export interface TrackSpec {
   closedness?: number;
   roundness?: number;
   extent?: { x: number; y: number };
+  /** Assert the hand touches this anchor at the start of the sign. */
+  at?: BodyAnchor;
+  /** Assert it touches this one at the end — DEAF runs ear to chin. */
+  endAt?: BodyAnchor;
   /** Palm rotation over the window. + = turned to face front. */
   palmTurn?: number;
   /** Fingers tipping up (+) or down (-) over the window. */
@@ -160,14 +216,29 @@ export function track(spec: TrackSpec): HandTrack {
   const net = { x: to.x - from.x, y: to.y - from.y };
   const straightPath = Math.hypot(net.x, net.y);
 
+  const start = sample(spec.shape, from, spec.startZone ?? spec.zone, spec.at);
+  const midSample = sample(spec.shape, mid, spec.zone);
+  const end = sample(spec.endShape ?? spec.shape, to, spec.zone, spec.endAt);
+  // Closest approach across the window, matching observation.ts.
+  const reached = {} as AnchorDistances;
+  for (const anchor of BODY_ANCHORS) {
+    reached[anchor] = Math.min(start.near[anchor], midSample.near[anchor], end.near[anchor]);
+  }
+  let nearestAnchor: BodyAnchor = 'chest';
+  for (const anchor of BODY_ANCHORS) {
+    if (reached[anchor] < reached[nearestAnchor]) nearestAnchor = anchor;
+  }
+
   return {
-    start: sample(spec.shape, from, spec.startZone ?? spec.zone),
-    mid: sample(spec.shape, mid, spec.zone),
-    end: sample(spec.endShape ?? spec.shape, to, spec.zone),
+    start,
+    mid: midSample,
+    end,
     net,
     path: spec.path ?? straightPath,
     extent: spec.extent ?? { x: Math.abs(net.x), y: Math.abs(net.y) },
     reversals: spec.reversals ?? 0,
+    reached,
+    nearestAnchor,
     palmTurn: spec.palmTurn ?? 0,
     pointTurn: spec.pointTurn ?? 0,
     closedness: spec.closedness ?? 0,

@@ -10,6 +10,8 @@ import { describe, expect, it } from 'vitest';
 import { bestHandshape, handshape } from '@/features/handshapes';
 import type { HandshapeName } from '@/features/handshapes';
 import { observe, sampleFrame, zoneOf } from '@/modes/signs/observation';
+import { HAND_LANDMARK } from '@/vision/types';
+import type { HandFrame, Point3 } from '@/vision/types';
 import type { SignFrame } from '@/modes/signs/observation';
 import {
   BUILT_IN_GLOSSES,
@@ -24,7 +26,7 @@ import { SignSegmenter } from '@/modes/signs/fewShot';
 import { DEFAULT_SETTINGS } from '@/settings/defaults';
 import { CONFUSION_CLUSTERS, LETTER_TEMPLATES } from '@/modes/fingerspell/letterTemplates';
 import { PER_FRAME_DIM } from '@/features/window';
-import { SHAPES, geometry, observation } from './helpers/geometry';
+import { SHAPES, geometry, observation, sample } from './helpers/geometry';
 
 describe('handshape predicates', () => {
   const names = Object.keys(SHAPES) as HandshapeName[];
@@ -71,22 +73,34 @@ describe('handshape predicates', () => {
 
 /** Handshapes that genuinely overlap and are not expected to outrank each other. */
 const OVERLAPS: Partial<Record<HandshapeName, HandshapeName[]>> = {
-  flat: ['bent', 'open'],
-  bent: ['flat', 'claw', 'flatO', 'c'],
-  claw: ['bent', 'open', 'flatO', 'c'],
-  open: ['flat', 'claw'],
-  h: ['v', 'index'],
-  v: ['h'],
-  w: ['open', 'v', 'h'],
-  index: ['h'],
-  fist: ['thumbUp', 'y'],
-  thumbUp: ['fist', 'y'],
-  y: ['thumbUp', 'fist', 'ily'],
   ily: ['y'],
-  flatO: ['c', 'bent', 'claw'],
   // A C hand and a bent-B hand are both "half-curled fingers" to a landmark
   // model. The thumb tells them apart in real life and MediaPipe rarely sees it.
   c: ['flatO', 'claw', 'bent'],
+  // The second wave of handshapes. Each is an existing one plus a thumb, or an
+  // existing one with a finger half-way — which is exactly the kind of
+  // difference an occluded thumb and a noisy landmark cannot be trusted on.
+  // Naming the overlap is the honest move; pretending these separate cleanly
+  // is how the fist cluster went wrong in letterTemplates.ts.
+  l: ['index', 'thumbUp', 'y'],
+  index: ['h', 'l', 'x', 'babyO'],
+  thumbUp: ['fist', 'y', 'l'],
+  babyO: ['flatO', 'fist', 'x', 'index'],
+  x: ['fist', 'index', 'babyO', 'bent', 'bentV'],
+  three: ['v', 'w', 'h', 'l'],
+  v: ['h', 'three', 'bentV'],
+  w: ['open', 'v', 'h', 'three'],
+  h: ['v', 'index', 'three', 'r'],
+  r: ['h', 'v', 'index'],
+  four: ['open', 'flat', 'w'],
+  open: ['flat', 'claw', 'four', 'w'],
+  flat: ['bent', 'open', 'four'],
+  bentV: ['claw', 'v', 'x', 'bent'],
+  bent: ['flat', 'claw', 'flatO', 'c', 'x', 'bentV'],
+  claw: ['bent', 'open', 'flatO', 'c', 'bentV'],
+  flatO: ['c', 'bent', 'claw', 'babyO'],
+  fist: ['thumbUp', 'y', 'x', 'babyO'],
+  y: ['thumbUp', 'fist', 'ily', 'l'],
 };
 
 describe('zones', () => {
@@ -107,7 +121,7 @@ describe('zones', () => {
 describe('observation', () => {
   const frame = (x: number, y: number, t: number): SignFrame => ({
     t,
-    dominant: { geometry: SHAPES.flat(), pos: { x, y, z: 0 }, zone: 'chest' },
+    dominant: sample(SHAPES.flat(), { x, y }, 'chest'),
     other: null,
     handGap: null,
     bodyUnknown: false,
@@ -160,8 +174,8 @@ describe('observation', () => {
     const gaps = [1.2, 0.2, 1.2, 0.2, 1.2];
     const frames: SignFrame[] = gaps.map((gap, i) => ({
       t: i * 33,
-      dominant: { geometry: SHAPES.flat(), pos: { x: 0, y: 0, z: 0 }, zone: 'chest' },
-      other: { geometry: SHAPES.flat(), pos: { x: gap, y: 0, z: 0 }, zone: 'chest' },
+      dominant: sample(SHAPES.flat(), { x: 0, y: 0 }, 'chest'),
+      other: sample(SHAPES.flat(), { x: gap, y: 0 }, 'chest'),
       handGap: gap,
       bodyUnknown: false,
     }));
@@ -810,5 +824,165 @@ describe('every built-in sign', () => {
         expect(CONFUSABLE[other] ?? []).toContain(gloss);
       }
     }
+  });
+});
+
+/**
+ * Body anchors, from a pose rather than a hand-built observation.
+ *
+ * Everything above builds HandSamples directly, so it tests the rules and not
+ * the thing that feeds them. These go through sampleFrame with a synthetic pose
+ * and real hand landmarks, which is the path the app actually runs.
+ *
+ * The capability under test is new and was the missing half of "location":
+ * MediaPipe returns the nose, eyes, ears and mouth on every frame and the
+ * pipeline was discarding all of it, keeping only the two shoulders. So the
+ * only thing a rule could say about WATER was "somewhere in the face band",
+ * which is equally true of a W hand held beside your head.
+ */
+describe('body anchors', () => {
+  const SHOULDER_Y = 0.5;
+  const HALF_WIDTH = 0.12;
+
+  /** A pose with a face, in image coordinates. Shoulder width is the unit. */
+  function poseWithFace(): Point3[] {
+    const unit = HALF_WIDTH * 2;
+    const p: Point3[] = Array.from({ length: 33 }, () => ({ x: 0.5, y: SHOULDER_Y, z: 0 }));
+    const put = (i: number, x: number, y: number) => {
+      p[i] = { x: 0.5 + x * unit, y: SHOULDER_Y + y * unit, z: 0, visibility: 1 } as Point3;
+    };
+    put(0, 0, -0.7); // nose
+    // Facing the camera, the subject's left is on the viewer's right, so it
+    // sits at HIGHER image x. Getting this backwards is the easiest mistake in
+    // the file and it silently mirrors the whole face.
+    put(2, 0.16, -0.86); // subject's left eye
+    put(5, -0.16, -0.86); // subject's right eye
+    put(7, 0.38, -0.78); // left ear
+    put(8, -0.38, -0.78); // right ear
+    put(9, 0.08, -0.56); // mouth left
+    put(10, -0.08, -0.56); // mouth right
+    put(11, 0.5, 0); // left shoulder
+    put(12, -0.5, 0); // right shoulder
+    return p;
+  }
+
+  /**
+   * A hand at a given point in BODY space, for the named dominant hand.
+   *
+   * The conversion matters and is easy to get wrong: body +x is outward on the
+   * dominant side, and for a right-dominant signer facing the camera that is
+   * *lower* image x. Passing an image offset here instead is what made the ear
+   * come out on the far side of the head.
+   */
+  function handAt(x: number, y: number, dominant: 'Left' | 'Right' = 'Right'): HandFrame {
+    const unit = HALF_WIDTH * 2;
+    const cx = 0.5 + x * unit * (dominant === 'Right' ? -1 : 1);
+    const cy = SHOULDER_Y + y * unit;
+    // Small enough that wrist and fingertips are close together; this test is
+    // about where the hand is, not what shape it makes.
+    const landmarks: Point3[] = Array.from({ length: 21 }, (_, i) => ({
+      x: cx + (i % 3) * 0.004,
+      y: cy + Math.floor(i / 3) * 0.004,
+      z: 0,
+    }));
+    return { landmarks, world: landmarks, handedness: dominant, handednessScore: 0.99 };
+  }
+
+  const frameAt = (x: number, y: number) => ({
+    t: 0,
+    width: 1000,
+    height: 1000,
+    pose: poseWithFace(),
+    hands: [handAt(x, y)],
+  });
+
+  it.each([
+    ['chin', 0, -0.44],
+    ['mouth', 0, -0.56],
+    ['forehead', 0, -1.0],
+    ['ear', 0.38, -0.78],
+    ['cheek', 0.3, -0.6],
+    ['chest', 0, 0.3],
+  ] as const)('puts a hand at the %s nearest the %s', (anchor, x, y) => {
+    const sampled = sampleFrame(frameAt(x, y), 'Right');
+    expect(sampled.dominant).not.toBeNull();
+    expect(sampled.dominant!.near[anchor]).toBeLessThan(0.16);
+    expect(sampled.bodyUnknown).toBe(false);
+  });
+
+  it('tells the chin from the forehead, which zones alone cannot', () => {
+    // Both are "the head or face band". The whole point of anchors is that
+    // WATER at the chin and FATHER at the forehead stop being the same place.
+    const chin = sampleFrame(frameAt(0, -0.44), 'Right').dominant!;
+    const forehead = sampleFrame(frameAt(0, -1.0), 'Right').dominant!;
+    expect(chin.near.chin).toBeLessThan(chin.near.forehead);
+    expect(forehead.near.forehead).toBeLessThan(forehead.near.chin);
+  });
+
+  it('measures from the fingertips, not the wrist', () => {
+    // A hand held below the chin with its fingers reaching up to it is at the
+    // chin. Measured from the wrist it is a whole hand-length away, which is
+    // how far off "near the face" was as a proxy for "touching your chin".
+    const unit = HALF_WIDTH * 2;
+    const wristY = SHOULDER_Y + -0.15 * unit;
+    const landmarks: Point3[] = Array.from({ length: 21 }, () => ({ x: 0.5, y: wristY, z: 0 }));
+    for (const tip of [HAND_LANDMARK.INDEX_TIP, HAND_LANDMARK.MIDDLE_TIP, HAND_LANDMARK.THUMB_TIP]) {
+      landmarks[tip] = { x: 0.5, y: SHOULDER_Y + -0.44 * unit, z: 0 };
+    }
+    const sampled = sampleFrame(
+      {
+        t: 0,
+        width: 1000,
+        height: 1000,
+        pose: poseWithFace(),
+        hands: [{ landmarks, world: landmarks, handedness: 'Right', handednessScore: 0.99 }],
+      },
+      'Right',
+    );
+    expect(sampled.dominant!.near.chin).toBeLessThan(0.1);
+    // The wrist itself is nowhere near it.
+    expect(Math.abs(sampled.dominant!.pos.y - -0.44)).toBeGreaterThan(0.25);
+  });
+
+  it('mirrors the ear to the dominant side for either handedness', () => {
+    // +x is outward on the dominant side, so "the ear" is a different physical
+    // ear for a left-handed signer and the rules must not have to know that.
+    const right = sampleFrame(frameAt(0.38, -0.78), 'Right').dominant!;
+    // Same body-space point — outward on the dominant side — which is a
+    // different physical ear and a different image position for each.
+    const leftFrame = { ...frameAt(0, 0), hands: [handAt(0.38, -0.78, 'Left')] };
+    const left = sampleFrame(leftFrame, 'Left').dominant!;
+    expect(right.near.ear).toBeLessThan(0.16);
+    expect(left.near.ear).toBeLessThan(0.16);
+  });
+
+  it('falls back to assumed proportions when the face is not visible', () => {
+    // Losing the mouth is no reason to stop knowing where the chest is, so the
+    // fallback is per-anchor rather than all-or-nothing.
+    const pose = poseWithFace().map((p, i) =>
+      i < 11 ? ({ ...p, visibility: 0.1 } as Point3) : p,
+    );
+    const sampled = sampleFrame({ ...frameAt(0, -0.44), pose }, 'Right');
+    expect(sampled.bodyUnknown).toBe(false);
+    expect(sampled.dominant!.near.chin).toBeLessThan(0.2);
+  });
+
+  it('reports no anchors at all when there is no body reference', () => {
+    const sampled = sampleFrame({ ...frameAt(0, -0.44), pose: null }, 'Right');
+    expect(sampled.bodyUnknown).toBe(true);
+    expect(sampled.dominant!.near.chin).toBeGreaterThan(1);
+  });
+
+  it('keeps the closest approach across a window, not the average', () => {
+    // DEAF touches the ear and then the chin. An average would say it was never
+    // quite at either.
+    const frames: SignFrame[] = [
+      sampleFrame(frameAt(0.38, -0.78), 'Right'),
+      sampleFrame(frameAt(0.2, -0.6), 'Right'),
+      sampleFrame(frameAt(0, -0.44), 'Right'),
+    ];
+    const track = observe(frames)!.dominant!;
+    expect(track.reached.ear).toBeLessThan(0.16);
+    expect(track.reached.chin).toBeLessThan(0.16);
   });
 });

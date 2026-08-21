@@ -107,7 +107,7 @@ export const SIGN_CASES: Record<string, ObservationSpec> = {
     dominant: { shape: SHAPES.c(), zone: 'chest', from: { x: 0.05, y: -0.1 }, to: { x: 0.05, y: 0.45 }, path: 0.56 },
   },
   YES: {
-    dominant: { shape: SHAPES.fist(), zone: 'chest', from: { x: 0.35, y: -0.05 }, path: 0.35, reversals: 3 },
+    dominant: { shape: SHAPES.fist(), zone: 'chest', from: { x: 0.35, y: -0.05 }, path: 0.35, reversals: 3, extent: { x: 0.03, y: 0.28 } },
   },
   NO: {
     dominant: { shape: SHAPES.h(), zone: 'chest', from: { x: 0.35, y: -0.05 }, path: 0.2, reversals: 2 },
@@ -241,6 +241,198 @@ export const SIGN_CASES: Record<string, ObservationSpec> = {
   WAIT: {
     dominant: { shape: SHAPES.claw(), zone: 'waist', from: { x: 0.3, y: 0.65 }, path: 0.18, reversals: 3 },
     other: { shape: SHAPES.claw(), zone: 'waist', from: { x: -0.05, y: 0.7 }, path: 0.18, reversals: 3 },
+  },
+  // --- second expansion -----------------------------------------------------
+  BOY: {
+    dominant: { shape: SHAPES.flatO(), zone: 'head', from: { x: 0.1, y: -0.95 }, path: 0.1, reversals: 2, at: 'forehead' },
+  },
+  WHY: {
+    dominant: { shape: SHAPES.open(), endShape: SHAPES.y(), zone: 'head', from: { x: 0.15, y: -0.95 }, to: { x: 0.55, y: -0.8 }, path: 0.43, at: 'forehead' },
+  },
+  UNDERSTAND: {
+    dominant: { shape: SHAPES.index(), zone: 'head', from: { x: 0.12, y: -0.9 }, to: { x: 0.12, y: -1.18 }, path: 0.28, at: 'forehead' },
+  },
+  CRY: {
+    dominant: { shape: SHAPES.index(), zone: 'face', startZone: 'head', from: { x: 0.16, y: -0.84 }, to: { x: 0.16, y: -0.5 }, path: 0.34, at: 'eye' },
+  },
+  HEAR: {
+    dominant: { shape: SHAPES.index(), zone: 'head', from: { x: 0.4, y: -0.78 }, path: 0.06, at: 'ear' },
+  },
+  FUNNY: {
+    dominant: { shape: SHAPES.h(), zone: 'face', from: { x: 0.05, y: -0.68 }, path: 0.16, reversals: 2, at: 'nose' },
+  },
+  HEARING: {
+    dominant: { shape: SHAPES.index(), zone: 'face', from: { x: 0.05, y: -0.56 }, path: 0.5, closedness: 0.8, roundness: 0.75, at: 'mouth' },
+  },
+  TELL: {
+    dominant: { shape: SHAPES.index(), zone: 'face', from: { x: 0.04, y: -0.46 }, to: { x: 0.4, y: -0.4 }, path: 0.37, at: 'chin' },
+  },
+  GIRL: {
+    dominant: { shape: SHAPES.thumbUp(), zone: 'face', from: { x: 0.3, y: -0.62 }, to: { x: 0.24, y: -0.4 }, path: 0.23, at: 'cheek' },
+  },
+  NOT: {
+    dominant: { shape: SHAPES.thumbUp(), zone: 'face', from: { x: 0.04, y: -0.46 }, to: { x: 0.38, y: -0.48 }, path: 0.34, at: 'chin' },
+  },
+  THIRSTY: {
+    dominant: { shape: SHAPES.index(), zone: 'neck', startZone: 'face', from: { x: 0.04, y: -0.44 }, to: { x: 0.04, y: -0.05 }, path: 0.39, at: 'chin', endAt: 'neck' },
+  },
+  LIKE: {
+    dominant: { shape: SHAPES.open(), endShape: SHAPES.flatO(), zone: 'chest', from: { x: 0.04, y: 0.28 }, to: { x: 0.42, y: 0.2 }, path: 0.39, at: 'chest' },
+  },
+  SELF: {
+    dominant: { shape: SHAPES.thumbUp(), zone: 'chest', from: { x: 0.04, y: 0.3 }, path: 0.1, reversals: 2, at: 'chest' },
+  },
+  WELCOME: {
+    dominant: { shape: SHAPES.flat(), zone: 'chest', from: { x: 0.55, y: 0.3 }, to: { x: 0.1, y: 0.3 }, path: 0.45, endAt: 'chest' },
+  },
+  YELLOW: {
+    dominant: { shape: SHAPES.y(), zone: 'neck', from: { x: 0.6, y: -0.15 }, path: 0.08, palmTurn: 0.9 },
+  },
+  'FINE-OK': {
+    dominant: { shape: SHAPES.f(), zone: 'neck', from: { x: 0.5, y: -0.1 }, path: 0.05 },
+  },
+  WHO: {
+    dominant: { shape: SHAPES.babyO(), zone: 'face', from: { x: 0.04, y: -0.46 }, path: 0.12, reversals: 2, at: 'chin' },
+  },
+  LEARN: {
+    dominant: { shape: SHAPES.flatO(), zone: 'head', startZone: 'chest', from: { x: 0.06, y: 0.25 }, to: { x: 0.1, y: -0.95 }, path: 1.2, endAt: 'forehead' },
+    other: { shape: SHAPES.flat(), zone: 'chest', from: { x: -0.06, y: 0.3 }, path: 0.04 },
+  },
+  GO: {
+    dominant: { shape: SHAPES.index(), zone: 'chest', from: { x: 0.15, y: 0.2 }, to: { x: 0.5, y: 0.2 }, path: 0.36 },
+    other: { shape: SHAPES.index(), zone: 'chest', from: { x: -0.15, y: 0.2 }, to: { x: -0.5, y: 0.2 }, path: 0.36 },
+  },
+  COME: {
+    dominant: { shape: SHAPES.index(), zone: 'chest', from: { x: 0.5, y: 0.2 }, to: { x: 0.15, y: 0.2 }, path: 0.36 },
+    other: { shape: SHAPES.index(), zone: 'chest', from: { x: -0.5, y: 0.2 }, to: { x: -0.15, y: 0.2 }, path: 0.36 },
+  },
+  FAMILY: {
+    dominant: { shape: SHAPES.f(), zone: 'chest', from: { x: 0.1, y: 0.05 }, path: 0.9, closedness: 0.85, roundness: 0.8 },
+    other: { shape: SHAPES.f(), zone: 'chest', from: { x: -0.1, y: 0.05 }, path: 0.9, closedness: 0.85, roundness: 0.8 },
+  },
+  FRIEND: {
+    dominant: { shape: SHAPES.x(), zone: 'chest', from: { x: 0.08, y: 0.15 }, path: 0.16, reversals: 2 },
+    other: { shape: SHAPES.x(), zone: 'chest', from: { x: -0.05, y: 0.18 }, path: 0.05 },
+    handsContact: true,
+    contacts: 2,
+  },
+  SIT: {
+    dominant: { shape: SHAPES.bentV(), zone: 'chest', from: { x: 0.08, y: 0.3 }, path: 0.08 },
+    other: { shape: SHAPES.h(), zone: 'chest', from: { x: -0.05, y: 0.35 }, path: 0.04 },
+    handsContact: true,
+    contacts: 1,
+  },
+  READ: {
+    dominant: { shape: SHAPES.v(), zone: 'chest', from: { x: 0.1, y: 0.0 }, to: { x: 0.1, y: 0.4 }, path: 0.42 },
+    other: { shape: SHAPES.flat(), zone: 'chest', from: { x: -0.08, y: 0.2 }, path: 0.04 },
+  },
+  WRITE: {
+    dominant: { shape: SHAPES.babyO(), zone: 'chest', from: { x: 0.0, y: 0.3 }, to: { x: 0.36, y: 0.3 }, path: 0.37 },
+    other: { shape: SHAPES.flat(), zone: 'chest', from: { x: -0.08, y: 0.32 }, path: 0.04 },
+    handsContact: true,
+    contacts: 1,
+  },
+  PLAY: {
+    dominant: { shape: SHAPES.y(), zone: 'chest', from: { x: 0.3, y: 0.25 }, path: 0.2, reversals: 3 },
+    other: { shape: SHAPES.y(), zone: 'chest', from: { x: -0.3, y: 0.25 }, path: 0.2, reversals: 3 },
+  },
+  HOUSE: {
+    dominant: { shape: SHAPES.flat(), zone: 'face', startZone: 'head', from: { x: 0.08, y: -0.95 }, to: { x: 0.45, y: -0.4 }, path: 0.67, at: 'forehead' },
+    other: { shape: SHAPES.flat(), zone: 'face', startZone: 'head', from: { x: -0.08, y: -0.95 }, to: { x: -0.45, y: -0.4 }, path: 0.67 },
+    handsContact: true,
+    contacts: 1,
+  },
+  // --- third expansion ------------------------------------------------------
+  PHONE: {
+    dominant: { shape: SHAPES.y(), zone: 'head', from: { x: 0.42, y: -0.78 }, path: 0.05, at: 'ear' },
+  },
+  BLACK: {
+    dominant: { shape: SHAPES.index(), zone: 'head', from: { x: -0.1, y: -1.0 }, to: { x: 0.32, y: -1.0 }, path: 0.42, at: 'forehead' },
+  },
+  RED: {
+    dominant: { shape: SHAPES.index(), zone: 'face', from: { x: 0.03, y: -0.6 }, to: { x: 0.03, y: -0.36 }, path: 0.25, at: 'mouth' },
+  },
+  HOT: {
+    dominant: { shape: SHAPES.claw(), zone: 'face', from: { x: 0.03, y: -0.56 }, to: { x: 0.42, y: -0.48 }, path: 0.4, at: 'mouth', palmTurn: -0.9 },
+  },
+  LATER: {
+    dominant: { shape: SHAPES.l(), zone: 'chest', from: { x: 0.5, y: 0.1 }, path: 0.1, palmTurn: 0.9, pointTurn: -1.0 },
+  },
+  BLUE: {
+    dominant: { shape: SHAPES.flat(), zone: 'neck', from: { x: 0.62, y: -0.15 }, path: 0.1, palmTurn: 0.9 },
+  },
+  HOSPITAL: {
+    dominant: { shape: SHAPES.h(), zone: 'chest', from: { x: 0.5, y: -0.05 }, to: { x: 0.5, y: 0.12 }, path: 0.2, at: 'shoulder' },
+  },
+  BATHROOM: {
+    dominant: { shape: SHAPES.fist(), zone: 'neck', from: { x: 0.62, y: -0.12 }, path: 0.16, reversals: 3, extent: { x: 0.26, y: 0.03 } },
+  },
+  TIME: {
+    dominant: { shape: SHAPES.index(), zone: 'chest', from: { x: 0.05, y: 0.2 }, path: 0.14, reversals: 2 },
+    other: { shape: SHAPES.fist(), zone: 'chest', from: { x: -0.08, y: 0.24 }, path: 0.03 },
+    handsContact: true,
+    contacts: 2,
+  },
+  DOCTOR: {
+    dominant: { shape: SHAPES.h(), zone: 'chest', from: { x: 0.05, y: 0.22 }, path: 0.05 },
+    other: { shape: SHAPES.flat(), zone: 'chest', from: { x: -0.08, y: 0.26 }, path: 0.03 },
+    handsContact: true,
+    contacts: 1,
+  },
+  WEEK: {
+    dominant: { shape: SHAPES.index(), zone: 'chest', from: { x: -0.05, y: 0.3 }, to: { x: 0.38, y: 0.3 }, path: 0.44 },
+    other: { shape: SHAPES.flat(), zone: 'chest', from: { x: -0.1, y: 0.33 }, path: 0.03 },
+    handsContact: true,
+    contacts: 1,
+  },
+  MONTH: {
+    dominant: { shape: SHAPES.index(), zone: 'chest', from: { x: 0.06, y: -0.02 }, to: { x: 0.06, y: 0.28 }, path: 0.32 },
+    other: { shape: SHAPES.index(), zone: 'chest', from: { x: -0.02, y: 0.12 }, path: 0.03 },
+    handsContact: true,
+    contacts: 1,
+  },
+  NIGHT: {
+    dominant: { shape: SHAPES.bent(), zone: 'waist', from: { x: 0.15, y: 0.6 }, to: { x: 0.15, y: 0.95 }, path: 0.36, pointTurn: -1.1 },
+    other: { shape: SHAPES.flat(), zone: 'waist', from: { x: -0.1, y: 0.98 }, path: 0.03 },
+    handsContact: true,
+    contacts: 1,
+  },
+  MORNING: {
+    dominant: { shape: SHAPES.flat(), zone: 'chest', from: { x: 0.1, y: 0.6 }, to: { x: 0.1, y: 0.15 }, path: 0.46 },
+    other: { shape: SHAPES.flat(), zone: 'chest', from: { x: -0.12, y: 0.45 }, path: 0.03 },
+    handsContact: true,
+    contacts: 1,
+  },
+  COMPUTER: {
+    dominant: { shape: SHAPES.c(), zone: 'chest', from: { x: 0.1, y: 0.25 }, to: { x: 0.28, y: 0.15 }, path: 0.22 },
+    other: { shape: SHAPES.flat(), zone: 'chest', from: { x: -0.06, y: 0.3 }, path: 0.03 },
+    handsContact: true,
+    contacts: 1,
+  },
+  SLOW: {
+    dominant: { shape: SHAPES.flat(), zone: 'chest', from: { x: 0.45, y: 0.3 }, to: { x: 0.06, y: 0.3 }, path: 0.4 },
+    other: { shape: SHAPES.flat(), zone: 'chest', from: { x: -0.06, y: 0.33 }, path: 0.03 },
+    handsContact: true,
+    contacts: 1,
+  },
+  NOW: {
+    dominant: { shape: SHAPES.bent(), zone: 'waist', from: { x: 0.2, y: 0.4 }, to: { x: 0.2, y: 0.78 }, path: 0.4 },
+    other: { shape: SHAPES.bent(), zone: 'waist', from: { x: -0.2, y: 0.4 }, to: { x: -0.2, y: 0.78 }, path: 0.4 },
+  },
+  COLD: {
+    dominant: { shape: SHAPES.fist(), zone: 'neck', from: { x: 0.2, y: -0.15 }, path: 0.2, reversals: 3 },
+    other: { shape: SHAPES.fist(), zone: 'neck', from: { x: -0.2, y: -0.15 }, path: 0.2, reversals: 3 },
+  },
+  STORE: {
+    dominant: { shape: SHAPES.flatO(), zone: 'chest', from: { x: 0.2, y: 0.2 }, to: { x: 0.55, y: 0.2 }, path: 0.36 },
+    other: { shape: SHAPES.flatO(), zone: 'chest', from: { x: -0.2, y: 0.2 }, to: { x: -0.55, y: 0.2 }, path: 0.36 },
+  },
+  TEACHER: {
+    dominant: { shape: SHAPES.flatO(), zone: 'head', from: { x: 0.08, y: -1.0 }, to: { x: 0.45, y: -0.95 }, path: 0.38, at: 'forehead' },
+    other: { shape: SHAPES.flatO(), zone: 'head', from: { x: -0.08, y: -1.0 }, to: { x: -0.45, y: -0.95 }, path: 0.38 },
+  },
+  MILK: {
+    dominant: { shape: SHAPES.fist(), zone: 'chest', from: { x: 0.25, y: 0.35 }, path: 0.12, reversals: 4 },
   },
 };
 

@@ -121,7 +121,7 @@ sign recognition work with no training at all, the answer was to do for whole
 signs what `letterTemplates.ts` already does for the manual alphabet: write the
 geometry down.
 
-- **Built-in signs as rules** (`signTemplates.ts`), 29 at first and 49 now. Chosen for signs that are
+- **Built-in signs as rules** (`signTemplates.ts`), 29 at first and 97 now. Chosen for signs that are
   common *and* geometrically separable from each other. Signs differing only by a
   handshape the camera cannot resolve are deliberately absent — including them
   would mean guessing.
@@ -1114,3 +1114,77 @@ Idealised observations. Passing means the rules are mutually *consistent* — no
 two templates describe the same thing — and nothing about accuracy on a real
 signer, which needs recordings and a held-out-signer evaluation. It is a lower
 bound on how bad things can be, not an estimate of how good they are.
+
+## Location said properly, and 97 signs
+
+### The pipeline was throwing the face away
+
+`bodyFrame` kept the two shoulders out of MediaPipe's 33 pose landmarks and
+discarded the rest — including the nose, eyes, ears and mouth corners, which are
+returned on every frame. So "location" meant one of five horizontal bands plus
+how far off the midline the hand sat.
+
+That is not a location. WATER taps the chin, MOTHER touches the chin, DEAF runs
+ear to chin, SEE starts at the eye, THINK touches the temple — every one of them
+is "the face band, somewhere". Any two signs sharing a handshape in that band
+had nothing left to tell them apart.
+
+`HandSample.near` now carries the distance to twelve named body anchors, and
+`HandTrack.reached` the closest approach across the window — closest rather than
+average, because contact is an event and DEAF touches two places in turn.
+
+Two details that matter:
+
+- **Measured from the working end of the hand**, not the wrist: fingertips,
+  thumb, middle knuckle, whichever got closest. Which part touches varies by
+  sign, and the wrist is most of a hand-length from all of them.
+- **Falls back per anchor, not all-or-nothing.** The mouth corners drop out far
+  more often than the shoulders; losing the mouth is no reason to stop knowing
+  where the chest is. `NOMINAL_ANCHORS` is the fallback, and is also what the
+  tests are written against, so a canonical observation and a real one mean the
+  same thing by "at the chin".
+
+### Two bugs the anchors' own tests caught
+
+**The dominant-side ear was on the wrong side of the head.** `flip === -1` means
+a right-dominant signer, whose dominant-side ear is the *right* ear; the code
+picked the left. Every synthetic HandSample test in the suite passed through it
+without noticing, because they build samples directly and never go through
+`sampleFrame`. It took a test that starts from a pose.
+
+**Absolute distance bands were wider than the gap between anchors.** Head
+anchors sit about 0.2 shoulder widths apart, and the first bands were 0.14–0.38,
+so a hand at the eye was also "at" the ear. THINK, HEAR, DEAF and CRY all
+collapsed into each other.
+
+The fix is `closerTo`, which asks which of two places the hand is *nearer*. That
+is what location means phonemically — contrastive, not absolute — and a
+comparison has no band to get wrong.
+
+### 49 to 97
+
+Eight more handshapes (L, F, baby-O, X, 3, bent-V, R, 4) and the anchors made
+another 48 signs expressible. Their genuine overlaps are recorded rather than
+denied: an L is an index with a thumb, a 3 is a V with a thumb, and an occluded
+thumb is exactly what this project already knows not to trust.
+
+The collision test found five more as they went in: THINK swallowing UNDERSTAND,
+HEAR, CRY and DEAF; FINE swallowing LIKE; YES swallowing SELF and BATHROOM;
+AGAIN swallowing NIGHT and COMPUTER; THIRSTY swallowing RED. Each is the same
+shape of mistake — **the template that asks for the least wins** — and each was
+fixed by making the loose one say what it actually requires: THINK is *still*,
+FINE is *still open when it arrives*, YES is *vertical*, AGAIN comes *inward*.
+
+### Where the ceiling is
+
+At 97 signs, **55 of them have another sign scoring above 0.5 on their own
+canonical observation**. At 29 it was a handful. The space that 22 handshapes,
+12 anchors, orientation and a dozen movement patterns can separate is large, but
+it is not unlimited, and the near-miss rate is the measurement of how full it is.
+
+Going on to 150 this way would buy coverage with precision — which is the trade
+`vocabulary.ts` was written to refuse: *"150 signs at 85% is a product, 2000
+signs at 45% is a demo that wastes people's time."* 150 was always specified as
+the target for a **trained model**, and that is still the honest route to it.
+The rules are what makes the app work on day one with no dataset; they are not
+what gets it to 150.
