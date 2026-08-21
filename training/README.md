@@ -3,9 +3,14 @@
 Offline pipeline for the models the app can load. Separate from the web app on
 purpose: nothing here runs in a browser, and the app must work with none of it.
 
-> **Not executed.** This pipeline was written but never run — the machine it was
-> authored on had no Python installed. Treat it as reviewed code, not tested
-> code. Expect to fix small things on first run.
+> **Smoke-tested in CI, never run on real data.** The `training` job in
+> `.github/workflows/ci.yml` runs both pipelines end to end — train, evaluate,
+> export, verify the ONNX against PyTorch — on synthetic input from
+> `make_smoke_data.py`. The plumbing is exercised on every push.
+>
+> What that does *not* tell you is anything about accuracy, or about
+> `prepare_data.py`, whose MediaPipe path still has no coverage because
+> synthetic images contain no hands. Expect to fix things there on first run.
 
 ## Setup
 
@@ -99,3 +104,39 @@ s01,4,right,deaf,25-34,yes,CONSENT-2026-011
 `evaluate.py` uses it to break accuracy down by skin tone, handedness and
 lighting. If the file is missing, the report says the breakdown is unavailable —
 which is an acceptable card entry. Silence is not.
+
+## Which dataset
+
+Read [`../docs/DATASETS.md`](../docs/DATASETS.md) before downloading anything.
+Short version: **FSboard** (CC BY 4.0, 147 paid and consenting Deaf signers) for
+Phase 1. **Not ChicagoFSWild** — it has no licence at all and its signers were
+never asked.
+
+FSboard is sequence-labelled, not per-letter labelled, so it does not drop into
+`prepare_data.py` as-is. DATASETS.md sets out the three ways to bridge that and
+which one to pick. Decide before writing code against it.
+
+## Smoke data
+
+```bash
+python make_smoke_data.py --out data/smoke.npz --task fingerspell
+python make_smoke_data.py --out data/smoke-signs.npz --task signs
+```
+
+Made-up hands, for exercising the pipeline. A model trained on this recognises
+nothing and its accuracy number means nothing. Never commit one to
+`public/models/`, never write it up in a card. CI trains one, checks it exports,
+and throws it away.
+
+Useful locally for the same reason: it tells you the plumbing works before you
+spend an afternoon extracting landmarks.
+
+## Reading a report
+
+`evaluate.py` reports **only over signers the model never saw**, read from the
+run's `run.json`. Signers that were in training appear in the per-signer table
+labelled as such and are excluded from every total.
+
+The gap between those two numbers is the most informative line in the report. A
+large one means the model has learned particular people rather than the
+language. Only the held-out number goes in a model card.

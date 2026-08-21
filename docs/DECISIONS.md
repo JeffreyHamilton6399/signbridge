@@ -776,3 +776,262 @@ templates degrade rather than break, and an unambiguous A stays an A. Validating
 it against real recordings is the obvious next step. Until then, personalization
 is still the thing that actually fixes this cluster — which is why the two bugs
 above mattered more than the new feature does.
+
+## Letting the fingers outvote the thumb
+
+`drapedCount` was added last round as a nudge and it did not fix the reported
+problem: a T or an M still read as an A. Scoring the templates against a fist
+whose thumb reads the way MediaPipe reports a hidden one showed why, and the
+numbers were not close — A took 61–70% of the distribution while the fingers
+were unambiguously saying M.
+
+### A collected the letters nobody else could claim
+
+A's thumb predicate was `below(thumbAcross, 0.18, 0.2)` — "the thumb is not far
+across the knuckles". Every hallucinated thumb satisfies that, because the
+hallucination *is* an A's thumb. T, N and M meanwhile each required their thumb
+to be somewhere specific, and a hidden thumb is never there, so their predicate
+zeroed and the letter was unreachable.
+
+That asymmetry, not the missing feature, was the bug. The loosest requirement in
+a cluster collects every hand the tighter ones reject.
+
+So A now has to *show* its thumb rather than merely not contradict one: out past
+the index knuckle on the radial side and above the knuckle line. A's thumb is
+the one fist thumb fully in view, so requiring evidence of it is fair. And T, N
+and M's thumb predicates became priors bounded in [0.55, 1] — they shade the
+choice between the three when the guess is good and get out of the way when it
+is not.
+
+### A second signal off the fingers
+
+`tipLift` is the perpendicular distance from the index/middle/ring fingertips to
+the palm plane. In A and S the tips press into the palm; in E, T, N and M they
+rest on a thumb and sit a thumb's thickness clear of it. Tips and palm are both
+in plain view.
+
+Paired with `drapedCount` it separates the cluster in two dimensions rather than
+one: A and S are low-lift undraped, E is high-lift undraped, and T, N and M are
+high-lift with one, two and three fingers draped. E gains a positive signature
+it did not have.
+
+### The floor under both
+
+Both features are still reasoned from how the letters are formed rather than
+measured from signers, so neither may multiply a letter's score by less than
+`REASONED_FLOOR` (0.2). One alone moves a letter by at most 5x — enough to shade
+a near-tie, not enough to overturn the thumb. Two agreeing move it by 25x, which
+is enough, and that is the case where every visible part of the hand says the
+same thing and only the invisible part disagrees.
+
+The failure mode this guards is the features saying nothing useful. A test pins
+it: when the fingers are uninformative the cluster falls back to A and the thumb
+— the old behaviour — rather than inverting into a confident wrong answer.
+
+### Making the reasoning checkable, and the fix findable
+
+Two things follow from "reasoned, not measured":
+
+- The debug panel now reports `drapedCount`, `tipLift` and `thumbAcross` live,
+  with the expected band for each letter written next to them. Holding the six
+  fists for a moment each is enough to find out whether the reasoning holds for
+  a given hand, which turns an assumption into something a user can falsify in
+  about a minute.
+- The ninety-second fist calibration is offered in the frame after three
+  corrections inside the cluster, instead of only in Settings. Three corrections
+  is the app learning that its generic geometry does not fit this hand, and a
+  fitted personal head is what fixes that — no amount of rule-tuning will.
+
+Confidence in the occluded cases lands around 35–45%, below the 0.65 commit
+threshold. So those letters are now withheld and offered as alternates rather
+than committed. That is the intended trade: it was previously committing A at
+70% and being wrong. The threshold was not touched.
+
+## Replacing the personal model: a small MLP, and augmentation
+
+Asked to make recognition "actually good", with a suggestion of running Ollama
+in GitHub. Two separate ideas there, one wrong and one right.
+
+**Wrong: an LLM as the classifier.** Ollama runs language models. The input here
+is 63 floats of hand geometry at 30fps. An LLM is roughly three orders of
+magnitude too slow for the 150ms budget and less accurate than a 20KB MLP,
+because this is not a language problem.
+
+**Wrong: inference in the cloud.** A network round-trip per frame breaks the
+constraint `privacy.onDeviceOnly` exists to enforce, and GitHub Actions is CI,
+not an inference host.
+
+**Right: a small trained net is the fix**, and the architecture already had the
+slot for it. **Right: GitHub Actions for _training_** — this machine has no
+Python, which is the actual reason `training/` has never been run.
+
+### What shipped
+
+The personal head was multinomial logistic regression. That structure cannot
+represent a conjunction: a linear model's answer to two features is always the
+sum of its answers to each alone. The fist cluster *is* a conjunction — a thumb
+reading low-across means A when the fingers are flat and means "the tracker is
+guessing, ignore it" when they are draped. Opposite conclusions from the same
+coordinate, decided by a different one.
+
+So: one hidden layer, 63 -> 48 -> K, about 4,000 parameters, fitted in-browser.
+Not because bigger is better. Because the previous shape could not express the
+thing that was going wrong.
+
+Eight samples would ordinarily memorise that. Three things stop it, in order:
+fresh augmentation every epoch (each sample re-tilted and re-noised on every
+pass, so no vector is ever seen twice), a narrow hidden layer, and weight decay.
+
+`features/augment.ts` simulates out-of-plane tilt, per-landmark jitter, and
+**more jitter on z than on x or y** — z is a weakly supervised offset rather
+than a measurement, worst exactly where it matters most, and noising it harder
+is a direct instruction not to lean on it. Every variant is re-normalized
+through `normalizeHand`, so synthetic samples satisfy the same invariants as
+real ones and cannot drift from the frame path.
+
+### Measured
+
+Synthetic hands, fitted on one session and scored at a **different hand angle**,
+which is the situation a user is in every time they open the app after
+calibrating. Six trials.
+
+| | prototypes | linear (old) | MLP + aug (new) |
+|---|---|---|---|
+| all 10 letters | 81.8% | 68.1% | **89.2%** |
+| fist cluster | 71.4% | 67.2% | **95.6%** |
+
+The expected crossover — linear at low sample counts, MLP once there was enough
+— does not exist. The MLP wins at every count tried, including two samples per
+letter (89% vs 63% and 55%). Augmentation is why: two samples still produce
+hundreds of distinct training vectors, so the regime where a linear model's
+rigidity would protect it never arrives. `fitPersonalHead` therefore always
+fits the MLP; `trainLinearHead` stays only so older stored heads keep loading.
+
+These are synthetic hands. The comparison transfers; the absolute numbers do not.
+
+### The number the UI is allowed to print
+
+`trainAccuracy` sits near 100% whatever happens, so a held-out measure was added
+— and then checked against the thing it looks like it predicts:
+
+| scored | true cross-session | reported |
+|---|---|---|
+| plain | 89% / 96% | 98% / 100% |
+| at training tilt | 89% / 96% | 96% / 95% |
+| at 2x training tilt | 89% / 96% | 92% / 89% |
+
+No setting tracks both cases. The reason is structural: **you cannot measure
+robustness to a transformation you trained on.** The model is tilt-invariant
+because augmentation taught it to be, so re-tilting withheld samples asks a
+question it has been drilled on.
+
+So the shipped measure scores at the training envelope — least-bad, never wildly
+optimistic — and every place that displays it says it is a ceiling rather than a
+forecast, with the measured optimism stated. It is a held-out sample, not a
+held-out session, and emphatically not a held-out signer. No number from here
+belongs in a model card.
+
+### Also
+
+- The debug panel reports which personal model is live. A head that fails to
+  load, or loads into a slot nothing reads, produces no error and silently drops
+  the app to geometric rules — that has shipped here before.
+- The `MIN_HEAD_SAMPLES` floor of 3 stays, even though the MLP beats everything
+  at 2. Loosening a safety threshold on synthetic evidence is not a trade worth
+  taking, and one correction files three frames, so it switches on anyway.
+- Stored linear heads carry no `kind`, so absence of one keeps meaning linear
+  and existing calibrations survive the upgrade. Round-trip tested both ways.
+
+### Still open
+
+Nothing here helps a user who has not calibrated — it is a *personal* model by
+construction. A shipped generic model needs a dataset; ChicagoFSWild is the
+chosen candidate for Phase 1, and its current availability and licence terms
+must be verified before anything trains on it. Training would run in GitHub
+Actions, which is where that idea belongs.
+
+## Picking a dataset, and making the training pipeline real
+
+Two things, from "continue, make it good" after the on-device MLP landed.
+
+### FSboard, not ChicagoFSWild
+
+ChicagoFSWild was the chosen candidate. Checking its terms — which was the whole
+point of checking — disqualified it:
+
+**It has no licence.** No licence document, no data use agreement, no
+redistribution terms. The page states a purpose ("in the interest of improving
+digital interfaces for signers…") and asks for citation. A statement of purpose
+is not a grant of rights, and there is no basis in it for shipping a derived
+model in a public app.
+
+**Its signers were never asked.** The clips are scraped from YouTube, aslized.org
+and deafvideo.tv and annotated via Mechanical Turk. The page carries a notice
+inviting people who find their own videos in it to get in touch — a takedown
+mechanism, whose existence concedes the point.
+
+Either fact alone rules it out here. Together they are the exact thing ETHICS.md
+is about: a hearing-built ASL app trained on Deaf people's language taken from
+public video without asking would earn the reaction it got.
+
+**FSboard** ([arXiv:2407.15806](https://arxiv.org/abs/2407.15806)) is the
+replacement: **CC BY 4.0**, and **147 paid and consenting Deaf signers**
+recruited, shipped a phone, and compensated. Ten times larger than anything
+else. It is the rare case where the ethically right choice is also the
+technically better one.
+
+The rule this establishes, written down in `docs/DATASETS.md`: a dataset needs
+**both** a licence permitting what we intend **and** provenance the people in it
+consented to. A permissive licence on non-consensual data is still
+non-consensual data.
+
+**The catch, which is not a licence problem.** FSboard is sequence-labelled — a
+clip of a phrase, labelled with the phrase — and Phase 1's model is a per-frame
+letter classifier. There is no frame-to-letter alignment. DATASETS.md sets out
+the three ways to bridge that (CTC forced alignment, switch to a sequence model,
+or hold-detection segmentation) and recommends the first. Nothing should be
+written against FSboard until that is decided.
+
+### The training pipeline now actually runs
+
+It never had. It was written on a machine with no Python, against a dataset that
+does not exist, and its README said so: "reviewed code, not tested code — expect
+to fix small things on first run". Discovering those on the day someone finally
+has data is the worst possible time.
+
+A `training` CI job now runs both pipelines end to end on synthetic input from
+`make_smoke_data.py`: train, evaluate, export, and verify the ONNX graph against
+PyTorch. It proves the plumbing and says nothing about accuracy — the hands are
+made up, and the generator says so loudly.
+
+Writing it found two real bugs, neither of which anything would have surfaced
+until it mattered.
+
+**`build()` dropped the layer width.** `train_fingerspell.py` recorded `hidden`
+in the checkpoint; `build()` ignored it and used the constructor default. So any
+run with a non-default `--hidden` trained happily, printed its accuracy, and
+left a `model.pt` that neither `evaluate.py` nor `export_onnx.py` could open —
+`load_state_dict` fails on a size mismatch. `train_signs.py` did not record the
+width at all. Both fixed, and the smoke run deliberately trains at a
+**non-default width**, because a run at the default would pass either way.
+
+**`evaluate.py` was reporting inflated accuracy.** It looped over every signer
+under the heading "leave-one-signer-out" — but the model is trained once on a
+fixed split and never refitted per fold, so for the ~75% of signers that were in
+training, the fold was measuring training accuracy. Those folds went into
+"Overall accuracy" and the per-class table.
+
+That is the precise inflation this pipeline exists to prevent, printed by the
+script whose job is to catch it. Headline numbers now come from held-out signers
+only, read from `run.json`; training signers are still shown, labelled, and
+excluded from every total, with the gap between them called out — a large gap
+means the model learned particular people rather than the language.
+
+### Honest limits
+
+- The CI job has never run. It is written against scripts that have never
+  executed, so the first push may well fail — which is the job working.
+- `prepare_data.py`'s MediaPipe path is still uncovered: synthetic images
+  contain no hands, so there is nothing for a landmarker to find.
+- None of this puts a model in `public/models/`. The app still ships none, and
+  the smoke job fails if a synthetic one ever leaks into the tree.

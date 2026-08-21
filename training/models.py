@@ -144,13 +144,44 @@ class SignCTC(nn.Module):
         return self.head(out)  # (batch, frames, classes)
 
 
-def build(arch: str, num_classes: int, input_dim: int, frames: int = 64) -> nn.Module:
+def build(
+    arch: str,
+    num_classes: int,
+    input_dim: int,
+    frames: int = 64,
+    hidden: int | None = None,
+) -> nn.Module:
+    """Reconstruct an architecture for loading a checkpoint into.
+
+    ``hidden`` must be threaded through from the checkpoint. It did not used to
+    be, and the consequence was quiet and total: training with any non-default
+    ``--hidden`` wrote a checkpoint that this function could not rebuild, so
+    ``load_state_dict`` raised a size mismatch and *both* evaluate.py and
+    export_onnx.py failed. The training run itself succeeded, printed its
+    accuracy, and left behind a model.pt that nothing downstream could open.
+
+    Anything that changes a layer's shape has to be recorded in the checkpoint
+    and read back here. There is no way to infer it from the weights that is
+    worth trusting.
+    """
     if arch == "mlp":
-        return FingerspellMLP(num_classes, input_dim)
+        return FingerspellMLP(num_classes, input_dim, **_hidden(hidden))
     if arch == "gru":
-        return SignGRU(num_classes, input_dim)
+        return SignGRU(num_classes, input_dim, **_hidden(hidden))
     if arch == "transformer":
+        # The transformer's width is d_model rather than `hidden`; heads must
+        # divide it, so it is not freely settable and is not exposed as a flag.
         return SignTransformer(num_classes, input_dim, frames=frames)
     if arch == "ctc":
-        return SignCTC(num_classes, input_dim)
+        return SignCTC(num_classes, input_dim, **_hidden(hidden))
     raise ValueError(f"unknown architecture: {arch}")
+
+
+def _hidden(hidden: int | None) -> dict[str, int]:
+    """Pass `hidden` on only when the checkpoint recorded one.
+
+    Checkpoints written before `hidden` was saved do not carry it, and for those
+    the constructor default is the right answer — it is what they were trained
+    with.
+    """
+    return {} if hidden is None else {"hidden": hidden}
