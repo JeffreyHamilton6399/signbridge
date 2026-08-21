@@ -524,9 +524,35 @@ describe('segmentation', () => {
 });
 
 describe('the fist cluster', () => {
-  /** A closed fist with the thumb somewhere along the knuckle line. */
-  const fist = (thumbAcross: number, thumbExtension = 0.2) =>
-    geometry({ ext: [thumbExtension, 0.05, 0.05, 0.05, 0.05], thumbAcross });
+  /**
+   * A fist letter, described the way the camera actually sees one: where the
+   * fingers are, plus whatever MediaPipe claims about the thumb.
+   *
+   * `drape` is how many fingers lie over the thumb and `lift` is how far their
+   * tips are held off the palm — both read from fingers in plain view. The
+   * thumb arguments are the part that may be invention.
+   */
+  const fistOf = (opts: {
+    drape: 0 | 1 | 2 | 3;
+    lift: number;
+    thumbAcross: number;
+    thumbExtension?: number;
+    thumbAlong?: number;
+  }) => {
+    const bend: [number, number, number] = [0.35, 0.35, 0.35];
+    for (let i = 0; i < opts.drape; i++) bend[i] = 0.62;
+    return geometry({
+      ext: [opts.thumbExtension ?? 0.2, 0.05, 0.05, 0.05, 0.05],
+      thumbAcross: opts.thumbAcross,
+      thumbAlong: opts.thumbAlong ?? 1.2,
+      knuckleBend: bend,
+      tipLift: opts.lift,
+    });
+  };
+
+  /** Tips pressed into the palm (A, S) versus resting on a thumb (E, T, N, M). */
+  const ON_PALM = 0.15;
+  const ON_THUMB = 0.34;
 
   const best = (g: ReturnType<typeof geometry>) =>
     [...LETTER_TEMPLATES]
@@ -534,33 +560,83 @@ describe('the fist cluster', () => {
       .sort((a, b) => b.score - a.score)[0].letter;
 
   /**
-   * A, T, N and M are the same closed fist; only the thumb moves. These pin the
-   * one measurement that separates them, because the obvious one — depth
-   * relative to the palm — depends on MediaPipe's z, which is invented whenever
-   * the thumb is hidden, and its invention looks like an A.
+   * A, T, N and M are the same closed fist; only the thumb moves — and in T, N
+   * and M the thumb is underneath the fingers, so MediaPipe never measures it.
+   * It infers one, and the inference is pulled toward the commonest fist, an A.
+   *
+   * So the cluster is decided by the fingers, which are visible, and the thumb
+   * only refines. These pin that ordering. The cases that matter are the
+   * occluded ones further down: they are the ones a real signer produces.
    */
   it('reads a thumb beside the index knuckle as A', () => {
-    expect(best(fist(0.0, 0.6))).toBe('A');
+    expect(best(fistOf({ drape: 0, lift: ON_PALM, thumbAcross: -0.1, thumbExtension: 0.6 }))).toBe('A');
   });
 
-  it('reads a thumb between index and middle as T, not A', () => {
-    expect(best(fist(0.3))).toBe('T');
+  it('reads one finger over the thumb as T, not A', () => {
+    expect(best(fistOf({ drape: 1, lift: ON_THUMB, thumbAcross: 0.3 }))).toBe('T');
   });
 
-  it('reads a thumb past the ring knuckle as M, not A', () => {
-    expect(best(fist(0.8))).toBe('M');
+  it('reads three fingers over the thumb as M, not A', () => {
+    expect(best(fistOf({ drape: 3, lift: ON_THUMB, thumbAcross: 0.8 }))).toBe('M');
   });
 
   it('places N between T and M', () => {
-    expect(best(fist(0.55))).toBe('N');
+    expect(best(fistOf({ drape: 2, lift: ON_THUMB, thumbAcross: 0.55 }))).toBe('N');
   });
 
-  it('orders the cluster monotonically across the knuckles', () => {
-    // Sweeping the thumb from the index knuckle to the pinky should walk
-    // A -> T -> N -> M and never jump back.
+  it('orders the cluster monotonically as fingers cover the thumb', () => {
     const order = ['A', 'T', 'N', 'M'];
-    const seen = [0.0, 0.3, 0.55, 0.8].map((across) => best(fist(across, across < 0.1 ? 0.6 : 0.2)));
+    const seen = ([0, 1, 2, 3] as const).map((drape) =>
+      best(
+        fistOf({
+          drape,
+          lift: drape === 0 ? ON_PALM : ON_THUMB,
+          thumbAcross: [-0.1, 0.3, 0.55, 0.8][drape],
+          thumbExtension: drape === 0 ? 0.6 : 0.2,
+        }),
+      ),
+    );
     expect(seen).toEqual(order);
+  });
+
+  /**
+   * The bug this cluster keeps regressing to, and the reason for everything
+   * above: the fingers say T, N or M while the hidden thumb reads as an A's.
+   * The visible evidence has to win.
+   */
+  it('reads a T as T even when the hidden thumb reads like an A', () => {
+    expect(
+      best(fistOf({ drape: 1, lift: ON_THUMB, thumbAcross: 0.05, thumbExtension: 0.35, thumbAlong: 1.15 })),
+    ).toBe('T');
+  });
+
+  it('reads an M as M even when the hidden thumb reads like an A', () => {
+    expect(
+      best(fistOf({ drape: 3, lift: ON_THUMB, thumbAcross: 0.1, thumbExtension: 0.35, thumbAlong: 1.15 })),
+    ).toBe('M');
+  });
+
+  /**
+   * The safety property on that inversion. Both the drape count and the tip
+   * lift are reasoned from how the letters are formed rather than measured from
+   * signers, so the failure that matters is them saying nothing useful. When
+   * they do, the cluster has to fall back to the thumb and to A — the previous
+   * behaviour — rather than inverting into a confident wrong answer.
+   */
+  it('falls back to A rather than inverting when the fingers say nothing', () => {
+    expect(
+      best(fistOf({ drape: 0, lift: ON_PALM, thumbAcross: 0.1, thumbExtension: 0.35, thumbAlong: 1.15 })),
+    ).toBe('A');
+  });
+
+  it('never reads a true fist as a tucked letter, whatever the thumb says', () => {
+    // Tips against the palm with nothing draped: there is no room under them
+    // for a thumb, so T, N and M are all wrong however the thumb is reported.
+    for (const thumbAcross of [0.3, 0.55, 0.8]) {
+      expect(['T', 'N', 'M']).not.toContain(
+        best(fistOf({ drape: 0, lift: ON_PALM, thumbAcross })),
+      );
+    }
   });
 
   it('still offers the rest of the cluster when it picks one', () => {

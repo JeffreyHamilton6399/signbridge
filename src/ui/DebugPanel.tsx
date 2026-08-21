@@ -18,10 +18,12 @@ export function DebugPanel({
   open,
   onClose,
   samples,
+  personalModel,
 }: {
   open: boolean;
   onClose(): void;
   samples: readonly CalibrationSample[];
+  personalModel: { kind: 'mlp' | 'linear'; letters: number; holdout: number | null } | null;
 }) {
   const fps = useSession((s) => s.fps);
   const inferenceMs = useSession((s) => s.inferenceMs);
@@ -75,7 +77,23 @@ export function DebugPanel({
         <dd className={`text-right ${handSpace === 'image' ? 'text-[var(--color-signal)]' : ''}`}>
           {handSpace === 'world' ? 'world 3D' : handSpace === 'image' ? 'image 2D' : '—'}
         </dd>
+        {/* Which personal model is live. A head that fails to load, or loads
+            into a slot nothing reads, produces no error anywhere and silently
+            drops the app back to geometric rules — that bug has shipped here
+            before, so it gets a line of its own. */}
+        <dt className="text-[var(--sb-fg-muted)]">Personal model</dt>
+        <dd className={`text-right ${personalModel ? '' : 'text-[var(--color-signal)]'}`}>
+          {personalModel === null
+            ? 'none — rules only'
+            : `${personalModel.kind === 'mlp' ? 'MLP' : 'linear'}, ${personalModel.letters} letters`}
+        </dd>
       </dl>
+      {personalModel?.holdout != null && (
+        <p className="mt-1.5 text-[10px] leading-relaxed text-[var(--sb-fg-muted)]">
+          {Math.round(personalModel.holdout * 100)}% on samples it was not fitted on — a ceiling,
+          not a forecast. Same sitting, same light, same signer.
+        </p>
+      )}
       {handSpace === 'image' && (
         <p className="mt-1.5 text-[10px] leading-relaxed text-[var(--color-signal)]">
           No metric landmarks from the tracker, so handshape is being read off the flat image.
@@ -111,6 +129,8 @@ export function DebugPanel({
           </li>
         ))}
       </ul>
+
+      <FistEvidence />
 
       <h3 className="mt-4 font-semibold">Per-letter accuracy</h3>
       {samples.length === 0 ? (
@@ -157,5 +177,69 @@ export function DebugPanel({
         </>
       )}
     </aside>
+  );
+}
+
+/**
+ * The three numbers behind A / S / E / T / N / M.
+ *
+ * These letters are one closed fist with the thumb in six places, and in T, N
+ * and M that thumb is underneath the fingers where the camera cannot see it —
+ * so the templates decide them on the fingers instead, which are in plain view.
+ * The bands they use for that are reasoned from how the letters are formed
+ * rather than measured from signers, and this readout is how that reasoning
+ * gets checked: hold each letter, watch which row moves.
+ *
+ * The expected reading is on every row, so a hand that disagrees is obvious
+ * without knowing the code. If yours does, calibrating the six is the fix —
+ * a fitted head learns your numbers instead of these.
+ */
+function FistEvidence() {
+  const e = useSession((s) => s.fistEvidence);
+
+  const rows = [
+    {
+      label: 'Fingers over thumb',
+      value: e === null ? null : e.drapedCount,
+      expected: 'T 1 · N 2 · M 3 · A/S/E 0',
+      seen: true,
+    },
+    {
+      label: 'Tips off palm',
+      value: e === null ? null : e.tipLift,
+      expected: 'A/S ~0.15 · E/T/N/M ~0.34',
+      seen: true,
+    },
+    {
+      label: 'Thumb across knuckles',
+      value: e === null ? null : e.thumbAcross,
+      expected: 'A <0 · T 0.3 · N 0.55 · M 0.85',
+      seen: false,
+    },
+  ];
+
+  return (
+    <>
+      <h3 className="mt-4 font-semibold">Fist cluster</h3>
+      <p className="mt-1.5 text-[10px] leading-relaxed text-[var(--sb-fg-muted)]">
+        A, S, E, T, N and M are the same fist. Hold each one and watch these move.
+      </p>
+      <dl className="mt-2 space-y-1.5">
+        {rows.map((row) => (
+          <div key={row.label}>
+            <div className="flex items-baseline justify-between gap-2">
+              <dt className={row.seen ? '' : 'text-[var(--sb-fg-muted)]'}>{row.label}</dt>
+              <dd className="tabular-nums">{row.value === null ? '—' : row.value.toFixed(2)}</dd>
+            </div>
+            <div className="text-[9px] text-[var(--sb-fg-muted)]">{row.expected}</div>
+          </div>
+        ))}
+      </dl>
+      <p className="mt-1.5 text-[10px] leading-relaxed text-[var(--sb-fg-muted)]">
+        The first two are measured off fingers the camera can see. The third is the tracker's
+        guess at a thumb hidden under them, which is why it counts for least — and why a T or an
+        M used to read as an A. If your hand does not match these bands, calibrate the six fists.
+      </p>
+    </>
   );
 }

@@ -16,10 +16,10 @@ import {
   CalibrationRecorder,
   TARGET_SAMPLES_PER_LETTER,
   buildPrototypes,
-  leaveOneOutAccuracy,
   perLetterAccuracy,
-  trainLinearHead,
+  // trainLinearHead is superseded by fitPersonalHead; see mlpHead.ts.
 } from '@/modes/fingerspell/calibration';
+import { fitPersonalHead, isMlpHead } from '@/modes/fingerspell/mlpHead';
 import { STATIC_LETTERS, letterHint } from '@/modes/fingerspell/letterTemplates';
 import { featuresFor } from '@/modes/fingerspell/classifier';
 import { pickHand } from '@/modes/fingerspell/useFingerspell';
@@ -59,9 +59,9 @@ export function CalibrationFlow({
   const [handSeen, setHandSeen] = useState(false);
   const [burst, setBurst] = useState(0);
   const [result, setResult] = useState<{
-    accuracy: number;
     perLetter: Record<string, number>;
-    trainAccuracy: number;
+    /** The fitted model's own held-out number, or null when it could not take one. */
+    holdout: number | null;
   } | null>(null);
 
   const capturingRef = useRef(false);
@@ -108,13 +108,12 @@ export function CalibrationFlow({
     // Yield a frame so the "fitting" state paints before the loop blocks.
     await new Promise((r) => setTimeout(r, 30));
     const samples = [...recorder.all];
-    const head = trainLinearHead(samples);
+    const head = fitPersonalHead(samples);
     await saveCalibration(samples, head);
     buildPrototypes(samples);
     setResult({
-      accuracy: leaveOneOutAccuracy(samples),
       perLetter: perLetterAccuracy(samples),
-      trainAccuracy: head?.trainAccuracy ?? 0,
+      holdout: head && isMlpHead(head) ? head.holdoutAccuracy : null,
     });
     setPhase('done');
     onFinished();
@@ -316,7 +315,7 @@ export function CalibrationFlow({
           <div className="py-10 text-center">
             <p className="font-[family-name:var(--font-display)] text-xl font-bold">Fitting your model…</p>
             <p className="mt-2 text-sm text-[var(--sb-fg-muted)]">
-              Training on 63 numbers per sample, in this browser. A second at most.
+              Fitting a small network to your samples, in this browser. A second or two.
             </p>
           </div>
         )}
@@ -325,13 +324,23 @@ export function CalibrationFlow({
           <>
             <h2 className="font-[family-name:var(--font-display)] text-2xl font-bold">Calibrated</h2>
             <p className="mt-2 text-sm leading-relaxed text-[var(--sb-fg-muted)]">
-              Leave-one-out accuracy on your own samples:{' '}
-              <span className="font-semibold text-[var(--sb-fg)]">
-                {Math.round(result.accuracy * 100)}%
-              </span>
-              . This is measured by holding out each sample in turn — it is honest about
-              memorisation, but it is still your hands, your lighting and your camera. Real accuracy
-              in a different room will be lower.
+              {result.holdout === null ? (
+                <>
+                  Not enough samples to hold any back, so there is no accuracy figure to give you.
+                  The model is fitted and running; record more of each letter to get one.
+                </>
+              ) : (
+                <>
+                  On samples it was not trained on:{' '}
+                  <span className="font-semibold text-[var(--sb-fg)]">
+                    {Math.round(result.holdout * 100)}%
+                  </span>
+                  . Treat that as a ceiling, not a forecast. Every sample came from this one
+                  sitting — your light, your sleeves, your camera, your hand held the way it is
+                  held right now. Measured against a later session it has run up to seven points
+                  optimistic, and it says nothing at all about how this works for anyone else.
+                </>
+              )}
             </p>
             <div className="mt-4 grid grid-cols-6 gap-1.5 sm:grid-cols-8">
               {letters.map((l) => {
@@ -360,8 +369,9 @@ export function CalibrationFlow({
               })}
             </div>
             <p className="mt-3 text-xs leading-relaxed text-[var(--sb-fg-muted)]">
-              Red letters are the ones to record more of. M, N, S, T and E are hard for everyone —
-              they differ only by where the thumb is, and the thumb is usually hidden.
+              Per letter, by how far each sample sits from its own average — a rough guide to which
+              ones to record more of, not the accuracy of the model above. M, N, S, T and E are hard
+              for everyone: they differ only by where the thumb is, and the thumb is usually hidden.
             </p>
             <div className="mt-5 flex justify-end gap-2">
               <button

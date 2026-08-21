@@ -16,7 +16,10 @@ import { FingerspellClassifier } from './classifier';
 import { DwellCommitter } from './debouncer';
 import { MotionLetterDetector } from './motion';
 import { Autocomplete } from './autocomplete';
-import { buildPrototypes, trainLinearHead } from './calibration';
+import { FIST_CLUSTER } from './letterTemplates';
+import { buildPrototypes } from './calibration';
+import { fitPersonalHead, isMlpHead } from './mlpHead';
+import type { FittedHead } from './mlpHead';
 import type { CalibrationSample } from './calibration';
 import { loadCalibration, loadUserWords, saveUserWords, saveCalibration } from '@/db/idb';
 import { handCentroid, handSpan } from '@/features/normalize';
@@ -32,8 +35,28 @@ export interface FingerspellApi {
   reloadCalibration(): Promise<void>;
   /** Latest calibration samples, for the debug panel's accuracy report. */
   samples: readonly CalibrationSample[];
+  /**
+   * The personal model currently classifying, for the debug panel.
+   *
+   * Worth surfacing because the way this goes wrong is silent: a head that
+   * fails to load, or loads and is never consulted, produces no error anywhere
+   * — it just quietly leaves the app running on geometric rules. That exact bug
+   * shipped once already. A line saying which model is live makes it a
+   * ten-second check instead of an investigation.
+   */
+  personalModel: { kind: 'mlp' | 'linear'; letters: number; holdout: number | null } | null;
   /** Set briefly after a correction is folded into the personal model. */
   taught: { letter: string; samples: number } | null;
+  /**
+   * How many times this session the user has corrected a letter to one of the
+   * six fists. They are the cluster the geometric rules cannot separate — the
+   * thumb that distinguishes them is underneath the fingers — so a run of these
+   * is the app finding out that its generic reasoning does not fit this hand.
+   * Calibrating the six takes about ninety seconds and is the actual fix, so
+   * the count is surfaced to offer it here rather than leaving it in settings
+   * for someone to go looking for.
+   */
+  fistCorrections: number;
   /**
    * How good a look the camera is getting, and what to do about it. Drives the
    * live hint over the video and gates commits when the input is unusable.
@@ -72,6 +95,8 @@ export function useFingerspell(enabled: boolean): FingerspellApi {
    */
   const committedFeaturesRef = useRef<Float32Array[]>([]);
   const [taught, setTaught] = useState<{ letter: string; samples: number } | null>(null);
+  const [fistCorrections, setFistCorrections] = useState(0);
+  const [personalModel, setPersonalModel] = useState<FingerspellApi['personalModel']>(null);
   const [scan, setScanState] = useState<ScanQuality>(GOOD_SCAN);
   // Written every frame, read only when it changes: a hint that re-rendered at
   // 30fps would cost more than it is worth.
@@ -101,18 +126,35 @@ export function useFingerspell(enabled: boolean): FingerspellApi {
     settings.recognition.smoothingWindow,
   ]);
 
+  /** Install a freshly fitted or freshly loaded head, and report what it is. */
+  const installHead = useCallback(
+    (head: FittedHead | null) => {
+      classifier.setLocalHead(head);
+      setPersonalModel(
+        head
+          ? {
+              kind: isMlpHead(head) ? 'mlp' : 'linear',
+              letters: head.labels.length,
+              holdout: isMlpHead(head) ? head.holdoutAccuracy : null,
+            }
+          : null,
+      );
+    },
+    [classifier],
+  );
+
   const reloadCalibration = useCallback(async () => {
     const stored = await loadCalibration();
     if (!stored) {
       classifier.setPrototypes(null);
-      classifier.setLocalHead(null);
+      installHead(null);
       samplesRef.current = [];
       return;
     }
     samplesRef.current = stored.samples;
     classifier.setPrototypes(buildPrototypes(stored.samples));
-    classifier.setLocalHead(stored.head ?? null);
-  }, [classifier]);
+    installHead(stored.head ?? null);
+  }, [classifier, installHead]);
 
   useEffect(() => {
     void reloadCalibration();
@@ -235,6 +277,14 @@ export function useFingerspell(enabled: boolean): FingerspellApi {
       }
 
       state.setAlternates(prediction.alternates, prediction.distribution);
+      // What the fist cluster is actually being decided on, for the debug
+      // panel. Two of these three read the fingers and one reads a thumb that
+      // may not be visible — see SessionState.fistEvidence.
+      state.setFistEvidence({
+        drapedCount: prediction.geometry.drapedCount,
+        tipLift: prediction.geometry.tipLift,
+        thumbAcross: prediction.geometry.thumbAcross,
+      });
 
       const centroid = handCentroid(hand.landmarks);
       const event = committer.feed({
@@ -322,6 +372,13 @@ export function useFingerspell(enabled: boolean): FingerspellApi {
       state.appendLetter(letter, 1);
       committer.reset();
 
+      // Counted before the capture check below: the user corrected a fist
+      // letter whether or not there were frames worth learning from, and it is
+      // the correction that says the rules are not fitting this hand.
+      if (FIST_CLUSTER.includes(letter as (typeof FIST_CLUSTER)[number])) {
+        setFistCorrections((n) => n + 1);
+      }
+
       const captured = committedFeaturesRef.current;
       if (captured.length === 0) return;
       // Spent: one hold teaches once. Tapping a second alternate corrects the
@@ -341,18 +398,18 @@ export function useFingerspell(enabled: boolean): FingerspellApi {
       samplesRef.current = samples;
 
       // Prototypes are a mean, so they update instantly and shift the decision
-      // straight away. The linear head is a fit and can wait for the next
-      // frame's idle moment.
+      // straight away. The MLP is a fit — a few hundred milliseconds — and can
+      // wait for the next idle moment rather than stalling the frame loop.
       classifier.setPrototypes(buildPrototypes(samples));
       setTaught({ letter, samples: samples.filter((s) => s.label === letter).length });
 
       void (async () => {
-        const head = samples.length >= 8 ? trainLinearHead(samples, { epochs: 150 }) : null;
-        if (head) classifier.setLocalHead(head);
+        const head = fitPersonalHead(samples);
+        if (head) installHead(head);
         await saveCalibration(samples, head);
       })();
     },
-    [session, committer, classifier],
+    [session, committer, classifier, installHead],
   );
 
   useEffect(() => {
@@ -372,6 +429,8 @@ export function useFingerspell(enabled: boolean): FingerspellApi {
     commitSpace,
     reloadCalibration,
     taught,
+    fistCorrections,
+    personalModel,
     scan,
     samples: samplesRef.current,
   };

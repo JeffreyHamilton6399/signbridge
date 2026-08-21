@@ -9,19 +9,48 @@
 import { openDB } from 'idb';
 import type { DBSchema, IDBPDatabase } from 'idb';
 import type { Settings } from '@/settings/schema';
-import type { CalibrationSample, LinearHead } from '@/modes/fingerspell/calibration';
+import type { CalibrationSample } from '@/modes/fingerspell/calibration';
+import { isMlpHead } from '@/modes/fingerspell/mlpHead';
+import type { FittedHead } from '@/modes/fingerspell/mlpHead';
+
+/**
+ * A stored personal head.
+ *
+ * The linear shape carries no `kind`, because it was written before there was
+ * anything to distinguish it from — so absence of `kind` means linear, and
+ * every calibration saved by an older build keeps loading untouched. Typed
+ * arrays become plain arrays here: IndexedDB can structure-clone a Float32Array
+ * but the rest of this file has always stored numbers, and staying consistent
+ * is worth more than the bytes.
+ */
+export type StoredHead =
+  | {
+      kind?: 'linear';
+      labels: string[];
+      weights: number[];
+      bias: number[];
+      trainAccuracy: number;
+      version: number;
+      updatedAt: number;
+    }
+  | {
+      kind: 'mlp';
+      labels: string[];
+      hidden: number;
+      w1: number[];
+      b1: number[];
+      w2: number[];
+      b2: number[];
+      trainAccuracy: number;
+      holdoutAccuracy: number | null;
+      version: number;
+      updatedAt: number;
+    };
 
 export interface StoredCalibration {
   id: 'fingerspell';
   samples: { label: string; features: number[]; t: number }[];
-  head: {
-    labels: string[];
-    weights: number[];
-    bias: number[];
-    trainAccuracy: number;
-    version: number;
-    updatedAt: number;
-  } | null;
+  head: StoredHead | null;
   updatedAt: number;
 }
 
@@ -114,7 +143,7 @@ export async function saveSettingsBlob(settings: Settings): Promise<void> {
 
 export async function loadCalibration(): Promise<{
   samples: CalibrationSample[];
-  head: LinearHead | null;
+  head: FittedHead | null;
 } | null> {
   return safely(async () => {
     const row = await (await db()).get('calibration', 'fingerspell');
@@ -125,38 +154,75 @@ export async function loadCalibration(): Promise<{
         features: Float32Array.from(s.features),
         t: s.t,
       })),
-      head: row.head
-        ? {
-            version: row.head.version,
-            labels: row.head.labels,
-            weights: Float32Array.from(row.head.weights),
-            bias: Float32Array.from(row.head.bias),
-            trainAccuracy: row.head.trainAccuracy,
-            updatedAt: row.head.updatedAt,
-          }
-        : null,
+      head: reviveHead(row.head),
     };
   }, null);
 }
 
+export function reviveHead(stored: StoredHead | null): FittedHead | null {
+  if (!stored) return null;
+  // No `kind` means a head written before MLPs existed, which is a linear one.
+  if (stored.kind !== 'mlp') {
+    return {
+      version: stored.version,
+      labels: stored.labels,
+      weights: Float32Array.from(stored.weights),
+      bias: Float32Array.from(stored.bias),
+      trainAccuracy: stored.trainAccuracy,
+      updatedAt: stored.updatedAt,
+    };
+  }
+  return {
+    kind: 'mlp',
+    version: stored.version,
+    labels: stored.labels,
+    hidden: stored.hidden,
+    w1: Float32Array.from(stored.w1),
+    b1: Float32Array.from(stored.b1),
+    w2: Float32Array.from(stored.w2),
+    b2: Float32Array.from(stored.b2),
+    trainAccuracy: stored.trainAccuracy,
+    holdoutAccuracy: stored.holdoutAccuracy,
+    updatedAt: stored.updatedAt,
+  };
+}
+
+export function storeHead(head: FittedHead | null): StoredHead | null {
+  if (!head) return null;
+  if (isMlpHead(head)) {
+    return {
+      kind: 'mlp',
+      labels: head.labels,
+      hidden: head.hidden,
+      w1: [...head.w1],
+      b1: [...head.b1],
+      w2: [...head.w2],
+      b2: [...head.b2],
+      trainAccuracy: head.trainAccuracy,
+      holdoutAccuracy: head.holdoutAccuracy,
+      version: head.version,
+      updatedAt: head.updatedAt,
+    };
+  }
+  return {
+    labels: head.labels,
+    weights: [...head.weights],
+    bias: [...head.bias],
+    trainAccuracy: head.trainAccuracy,
+    version: head.version,
+    updatedAt: head.updatedAt,
+  };
+}
+
 export async function saveCalibration(
   samples: readonly CalibrationSample[],
-  head: LinearHead | null,
+  head: FittedHead | null,
 ): Promise<void> {
   await safely(async () => {
     const row: StoredCalibration = {
       id: 'fingerspell',
       samples: samples.map((s) => ({ label: s.label, features: [...s.features], t: s.t })),
-      head: head
-        ? {
-            labels: head.labels,
-            weights: [...head.weights],
-            bias: [...head.bias],
-            trainAccuracy: head.trainAccuracy,
-            version: head.version,
-            updatedAt: head.updatedAt,
-          }
-        : null,
+      head: storeHead(head),
       updatedAt: Date.now(),
     };
     await (await db()).put('calibration', row);

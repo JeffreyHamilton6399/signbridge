@@ -7,12 +7,17 @@
  * every hand shape, sleeve, and camera angle in the world, while this one only
  * has to cover yours.
  *
- * Two heads are fitted from the same samples:
- *   - nearest-centroid prototypes, usable from 1 sample per class
- *   - a softmax (multinomial logistic) head, better once there are ~5+ per class
+ * Two things are fitted from the same samples:
+ *   - nearest-centroid prototypes, usable from 1 sample per class (this file)
+ *   - a small MLP, which is what actually classifies (see mlpHead.ts)
  *
  * Training on 63-float vectors rather than images is what makes this tractable:
- * a full fit over 26 x 10 samples is a few hundred thousand multiply-adds.
+ * the whole fit is a few hundred milliseconds in a browser, on a phone.
+ *
+ * {@link trainLinearHead} below is the MLP's predecessor. Nothing fits a new one
+ * — see fitPersonalHead for the measurements that retired it — but it is still
+ * exported and still runs, because heads saved by older builds deserialize into
+ * it and must keep working.
  */
 import { meanVector } from '@/features/normalize';
 import { STATIC_LETTERS } from './letterTemplates';

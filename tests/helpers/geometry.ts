@@ -41,6 +41,8 @@ export interface GeometrySpec {
   indexMiddleCrossed?: boolean;
   /** Knuckle-bend share for index, middle, ring. Default: an ordinary fist. */
   knuckleBend?: [number, number, number];
+  /** Fingertip clearance off the palm plane. Default: tips against the palm. */
+  tipLift?: number;
 }
 
 /** A relaxed, half-open hand — nothing in particular. */
@@ -74,6 +76,7 @@ export function geometry(spec: GeometrySpec = {}): HandGeometry {
     thumbDepth: spec.thumbDepth ?? 0,
     knuckleBend: [...(spec.knuckleBend ?? FIST_BEND), 0.35],
     curlBalance: mean(spec.knuckleBend ?? FIST_BEND),
+    tipLift: spec.tipLift ?? 0.15,
     drapedCount: (spec.knuckleBend ?? FIST_BEND).reduce(
       (a, b) => a + clamp01((b - 0.4) / 0.18),
       0,

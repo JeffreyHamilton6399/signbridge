@@ -95,6 +95,29 @@ export interface HandGeometry {
   /** Mean of {@link knuckleBend} over index, middle and ring. */
   curlBalance: number;
   /**
+   * How far the index/middle/ring fingertips are held off the palm plane, in
+   * hand spans. Mean of the three, perpendicular distance, sign discarded.
+   *
+   * This is the second thumb-independent signal, and unlike {@link knuckleBend}
+   * it is a distance rather than a ratio, so the two fail differently. Both the
+   * fingertips and the three palm points it is measured against are in plain
+   * view in every fist letter, which is the whole point: it says where the
+   * thumb is by measuring the fingers resting on top of it.
+   *
+   *   A, S  a true fist — the fingertips press into the palm. Low.
+   *   E     tips fold down onto a thumb lying across the palm. High.
+   *   T,N,M tips lie over a thumb tucked underneath them. High.
+   *
+   * Paired with {@link drapedCount} it separates the cluster in two dimensions:
+   * A and S are low-lift and undraped, E is high-lift and undraped, and T, N
+   * and M are high-lift with one, two and three fingers draped.
+   *
+   * HONEST CAVEAT: the bands are reasoned from how the letters are formed, not
+   * measured from signers — same caveat as {@link knuckleBend}, and the debug
+   * panel now reports both live so it can be checked against a real hand.
+   */
+  tipLift: number;
+  /**
    * Soft count of index/middle/ring lying over the thumb: ~1 in T, ~2 in N,
    * ~3 in M, ~0 in A, S and E. Derived from {@link knuckleBend}, so it says
    * nothing about the thumb itself — which is exactly the point.
@@ -245,6 +268,15 @@ export function handGeometry(normalized: Point3[], rawImage?: Point3[] | null): 
     cross(sub(normalized[L.INDEX_MCP], normalized[L.WRIST]), sub(normalized[L.PINKY_MCP], normalized[L.WRIST])),
   );
 
+  // How far the covering fingers are held off the palm. Perpendicular offset
+  // from the palm plane, so it measures clearance rather than how far across
+  // the palm the tip has travelled.
+  const liftOf = (f: Finger) => {
+    const d = sub(fingers[f].tip, palmCentre);
+    return Math.abs(d.x * palmNormal.x + d.y * palmNormal.y + d.z * palmNormal.z);
+  };
+  const tipLift = (liftOf('index') + liftOf('middle') + liftOf('ring')) / 3;
+
   // Absolute pointing direction, from the pre-rotation landmarks. Image y grows
   // downward, so an upward-pointing hand has a negative dy.
   let pointing = 1;
@@ -305,6 +337,7 @@ export function handGeometry(normalized: Point3[], rawImage?: Point3[] | null): 
     thumbAlong: tipOf('thumb').y,
     knuckleBend,
     curlBalance,
+    tipLift,
     drapedCount,
     axis: norm(sub(normalized[L.MIDDLE_MCP], normalized[L.WRIST])),
     pointing,

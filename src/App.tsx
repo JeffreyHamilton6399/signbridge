@@ -64,6 +64,7 @@ function Shell() {
   const [calibrating, setCalibrating] = useState<readonly string[] | null>(null);
   const [correctionOpen, setCorrectionOpen] = useState(false);
   const [debugOpen, setDebugOpen] = useState(false);
+  const [fistOfferDismissed, setFistOfferDismissed] = useState(false);
   const [signRecorderOpen, setSignRecorderOpen] = useState(false);
   // Signs mode fills this in; the alternates strip calls it so that picking a
   // different sign both fixes the transcript and teaches the recogniser.
@@ -172,6 +173,29 @@ function Shell() {
 
   const showOnboarding = cameraMode && !pipeline.active;
   const confusionOptions = topGuess ? (CONFUSION_CLUSTERS[topGuess] ?? []) : [];
+
+  /**
+   * Offer the ninety-second fist calibration once someone has corrected their
+   * way through three of those letters.
+   *
+   * It lived in settings, which is the wrong place for it: the six fists are
+   * where nearly all the errors are, and someone hitting them is busy signing,
+   * not browsing preferences. Three corrections is the app learning that its
+   * generic geometry does not fit this hand — which is precisely what a fitted
+   * personal head fixes and what no amount of rule-tuning will.
+   *
+   * Withheld once the letters already have samples behind them, since then the
+   * personal model is already running and the offer would just be nagging.
+   */
+  const fistSamples = FIST_CLUSTER.map(
+    (letter) => fingerspell.samples.filter((s) => s.label === letter).length,
+  );
+  const offerFistCalibration =
+    mode === 'fingerspell' &&
+    pipeline.active &&
+    !fistOfferDismissed &&
+    fingerspell.fistCorrections >= 3 &&
+    Math.min(...fistSamples) < 4;
 
   return (
     <div className="relative h-full w-full overflow-hidden">
@@ -357,7 +381,41 @@ function Shell() {
         </div>
       )}
 
-      {fingerspell.taught && (
+      {offerFistCalibration && (
+        <div
+          role="status"
+          style={{ bottom: `calc(var(--sb-bar-h, 6rem) + 0.75rem)` }}
+          className="sb-panel sb-on-video absolute inset-x-3 z-40 mx-auto max-w-sm rounded-2xl px-4 py-3 text-xs"
+        >
+          <p className="leading-relaxed">
+            A, S, E, T, N and M are the same fist with the thumb in six places, and in three of
+            them your fingers hide it from the camera. Recording the six teaches the app your
+            hand and is the only thing that reliably separates them.
+          </p>
+          <div className="mt-2.5 flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setFistOfferDismissed(true);
+                setCalibrating(FIST_CLUSTER);
+              }}
+              className="rounded-full bg-[var(--color-signal)] px-3 py-1.5 font-semibold text-[#1a1200]"
+            >
+              Record the six fists
+            </button>
+            <span className="text-[var(--sb-fg-muted)]">About 90 seconds</span>
+            <button
+              type="button"
+              onClick={() => setFistOfferDismissed(true)}
+              className="ml-auto text-[var(--sb-fg-muted)] underline underline-offset-2"
+            >
+              Not now
+            </button>
+          </div>
+        </div>
+      )}
+
+      {fingerspell.taught && !offerFistCalibration && (
         <div
           role="status"
           style={{ bottom: `calc(var(--sb-bar-h, 6rem) + 0.75rem)` }}
@@ -394,7 +452,12 @@ function Shell() {
         </div>
       )}
 
-      <DebugPanel open={debugOpen} onClose={() => setDebugOpen(false)} samples={fingerspell.samples} />
+      <DebugPanel
+        open={debugOpen}
+        onClose={() => setDebugOpen(false)}
+        samples={fingerspell.samples}
+        personalModel={fingerspell.personalModel}
+      />
       <CorrectionSheet open={correctionOpen} onClose={() => setCorrectionOpen(false)} />
       <SettingsPanel
         open={settingsOpen}

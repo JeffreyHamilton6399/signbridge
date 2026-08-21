@@ -2,8 +2,9 @@
  * Fingerspelling classifier.
  *
  * Sources of evidence, blended in this order of preference:
- *   1. an ONNX MLP, if one has been shipped in /public/models  (best; none yet)
- *   2. a softmax head fitted locally from the user's own samples
+ *   1. an ONNX model, if one has been shipped in /public/models (best; none yet)
+ *   2. a head fitted locally from the user's own samples — a small MLP once
+ *      there are enough of them, a linear head below that (see mlpHead.ts)
  *   3. nearest-centroid prototypes over those same samples
  *   4. the geometric templates in letterTemplates.ts           (always present)
  *
@@ -23,8 +24,9 @@ import { geometryOf } from '@/features/handGeometry';
 import type { HandGeometry } from '@/features/handGeometry';
 import { normalizeHand, toFeatureVector, squaredDistance } from '@/features/normalize';
 import { LETTER_TEMPLATES } from './letterTemplates';
-import { runLinearHead } from './calibration';
-import type { LetterPrototypes, LinearHead } from './calibration';
+import { runFittedHead } from './mlpHead';
+import type { FittedHead } from './mlpHead';
+import type { LetterPrototypes } from './calibration';
 
 export interface Candidate {
   label: string;
@@ -68,7 +70,7 @@ export interface OnnxLetterModel {
 export class FingerspellClassifier {
   private prototypes: LetterPrototypes | null = null;
   private onnx: OnnxLetterModel | null = null;
-  private head: LinearHead | null = null;
+  private head: FittedHead | null = null;
 
   setPrototypes(p: LetterPrototypes | null): void {
     this.prototypes = p;
@@ -79,11 +81,13 @@ export class FingerspellClassifier {
   }
 
   /**
-   * The locally-fitted softmax head.
+   * The locally-fitted personal head — an MLP or a linear head, whichever the
+   * sample count justified when it was fitted. {@link runFittedHead} dispatches.
    *
-   * This is separate from {@link setOnnxModel} because it is not async: it is a
-   * 24x63 matrix multiply, microseconds, and it can run inside {@link predict}
-   * on the frame path. It was previously routed through the ONNX slot, which
+   * This is separate from {@link setOnnxModel} because it is not async: even the
+   * MLP is about 4,000 multiply-adds, microseconds, so it runs inside
+   * {@link predict} on the frame path. It was previously routed through the ONNX
+   * slot, which
    * only `predictAsync` consults — and nothing calls `predictAsync`. So the
    * better of the two personal heads was fitted, stored, and never once used to
    * classify a frame. Everything personalization did was coming from the
@@ -94,7 +98,7 @@ export class FingerspellClassifier {
    * in a handful of coordinates and agree in the rest come out nearly
    * equidistant. A fitted head learns which coordinates carry the difference.
    */
-  setLocalHead(h: LinearHead | null): void {
+  setLocalHead(h: FittedHead | null): void {
     this.head = h;
   }
 
@@ -207,14 +211,24 @@ export class FingerspellClassifier {
     const counts = new Map(this.prototypes?.classes.map((c) => [c.label, c.sampleCount]) ?? []);
     const leastSeen = Math.min(...head.labels.map((l) => counts.get(l) ?? 0));
     // Silent below three examples of its rarest class, then ramping to full
-    // voice at six. A head fitted on one or two samples per class does not
-    // generalise, it memorises, and because it memorises perfectly it comes out
-    // almost one-hot — confident enough to override the prototypes even at a
-    // low blend weight. A floor is the only thing that actually holds it back.
+    // voice at six.
+    //
+    // That floor was put here for the linear head, which on one or two samples
+    // per class memorised rather than generalised and came out almost one-hot —
+    // confident enough to override the prototypes at any blend weight. The MLP
+    // does not have that failure: augmentation means two samples still produce
+    // hundreds of distinct training vectors, and measured across sessions it
+    // beats both the prototypes and the old head even at two.
+    //
+    // The floor stays anyway. Those measurements are on synthetic hands, and
+    // loosening a safety threshold is not something to do on synthetic
+    // evidence — the cost of being wrong is a confidently wrong letter, and the
+    // cost of leaving it is that one correction (which files three frames)
+    // switches the head on regardless.
     if (leastSeen < MIN_HEAD_SAMPLES) return dist;
     const weight = 0.8 * Math.min(1, leastSeen / 6);
 
-    const probs = runLinearHead(head, features);
+    const probs = runFittedHead(head, features);
     const mass = head.labels.reduce((a, l) => a + (dist[l] ?? 0), 0);
     if (mass <= 0) return dist;
 

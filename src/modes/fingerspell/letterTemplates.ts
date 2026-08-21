@@ -15,10 +15,19 @@
  *
  * MediaPipe does not *measure* a hidden thumb, it infers one, and its inference
  * is drawn toward the commonest fist — which is an A. That is why a T or an M
- * reads as an A: the landmarks handed to these rules already say A. The fist
- * letters are therefore keyed on thumbAcross, a purely 2D measure of where the
- * thumb tip sits along the knuckle line, which degrades more gracefully than
- * anything using z. It is still inference, not measurement.
+ * reads as an A: the landmarks handed to these rules already say A.
+ *
+ * So the fist letters are decided on the fingers, which the camera can see, and
+ * the thumb only refines. drapedCount says how many fingers lie over the thumb
+ * (one in T, two in N, three in M, none in A, S and E) and tipLift says whether
+ * the fingertips reach the palm or rest on a thumb. A, S and E keep full-weight
+ * thumb predicates because in those three the thumb is genuinely in view; T, N
+ * and M's are priors — see tuckedNear.
+ *
+ * The two finger features are reasoned from how the letters are formed rather
+ * than measured from signers, so REASONED_FLOOR bounds how far either can move
+ * a letter, and the debug panel reports both live so the reasoning can be
+ * checked against a real hand.
  *
  * The reliable fix is personalization. A model fitted to what MediaPipe
  * actually reports for *this* signer's T can separate it from their A even when
@@ -94,17 +103,64 @@ const near = (v: number, target: number, tol: number) =>
   clamp01(1 - Math.abs(v - target) / tol);
 
 /**
+ * The floor under every predicate that reads the fingers to infer where the
+ * thumb is. Nothing derived from HandGeometry.knuckleBend or .tipLift may
+ * multiply a letter's score by less than this.
+ *
+ * Both of those features are reasoned from how the letters are formed rather
+ * than measured from signers, and this is the safety margin on that reasoning.
+ * One of them alone can move a letter by a factor of five — enough to shade a
+ * near-tie — but not enough to overturn the thumb evidence on its own. Two of
+ * them agreeing can, by a factor of twenty-five, which is the intent: that is
+ * the case where every visible part of the hand is saying the same thing and
+ * only the invisible part disagrees.
+ *
+ * If the reasoning turns out to be wrong, these letters degrade back toward the
+ * thumb-only behaviour rather than inverting. The debug panel reports both
+ * features live so it can be checked against a real hand in about a minute.
+ */
+const REASONED_FLOOR = 0.2;
+
+/**
  * How well the number of fingers lying over the thumb matches this letter.
  *
  * T covers the thumb with one finger, N with two, M with three; A, S and E with
  * none. That count comes from the fingers alone — see HandGeometry.knuckleBend
- * — which is the only part of these letters the camera can actually see. Soft
- * on purpose: it nudges a near-tie the right way and cannot on its own rule a
- * letter out, because the reasoning behind it has not been checked against real
- * signers yet.
+ * — which is the only part of these letters the camera can actually see.
  */
 const drapes = (g: HandGeometry, expected: number) =>
-  0.45 + 0.55 * clamp01(1 - Math.abs(g.drapedCount - expected) / 1.6);
+  REASONED_FLOOR +
+  (1 - REASONED_FLOOR) * clamp01(1 - Math.abs(g.drapedCount - expected) / 1.35);
+
+/**
+ * How far the fingertips are held off the palm — low in a true fist, high when
+ * they are resting on a thumb. See HandGeometry.tipLift.
+ */
+const lifts = (g: HandGeometry, target: number, tol = 0.16) =>
+  REASONED_FLOOR + (1 - REASONED_FLOOR) * near(g.tipLift, target, tol);
+
+/** Fingertips pressed into the palm, as in A and S. */
+const TIP_ON_PALM = 0.15;
+/** Fingertips propped up on a thumb, as in E, T, N and M. */
+const TIP_ON_THUMB = 0.34;
+
+/**
+ * Where the thumb sits, *when the fingers are lying on top of it*.
+ *
+ * In T, N and M the thumb is underneath the hand and the camera never sees it,
+ * so MediaPipe does not measure it — it infers one, and its inference is pulled
+ * toward the commonest fist, which is an A. Treating that inference as a hard
+ * requirement is what made these three letters unreachable: the guessed thumb
+ * never lands where the letter says it should, so the predicate zeroed and the
+ * A that MediaPipe had effectively already voted for won every time.
+ *
+ * So it is a prior here, not a requirement. It shades the choice between T, N
+ * and M when the guess happens to be good, and gets out of the way when it is
+ * not. A, S and E keep their thumb predicates at full strength, because in
+ * those three the thumb is genuinely in view.
+ */
+const tuckedNear = (g: HandGeometry, target: number, tol = 0.35) =>
+  0.55 + 0.45 * near(g.thumbAcross, target, tol);
 
 /** Where the bend sits: low in E, middling in a fist, high when draped. */
 const bendsAtKnuckle = (g: HandGeometry, target: number) =>
@@ -134,17 +190,21 @@ export const LETTER_TEMPLATES: readonly LetterTemplate[] = [
   T('A', 'Fist, thumb resting alongside the index finger.', (g) =>
     geomean([
       down(g.four[0]), down(g.four[1]), down(g.four[2]), down(g.four[3]),
-      // The thumb sits beside the index knuckle, not tucked in among the
-      // fingers. This is what separates A from T, N and M, and it is measured
-      // across the knuckles rather than in depth because MediaPipe invents a
-      // plausible thumb whenever the real one is hidden — and its guess looks
-      // like an A.
-      below(g.thumbAcross, 0.18, 0.2),
+      // A's thumb is the one fist thumb that is fully in view, riding up the
+      // radial side of the index finger — out past the index knuckle and above
+      // the knuckle line. So A is required to *show* that, rather than merely
+      // to not contradict it. It used to ask only that the thumb was not far
+      // across the knuckles, which every hallucinated thumb also satisfies,
+      // and that is most of why T, N and M were reading as A: the letter with
+      // the loosest requirement collects every hand the others cannot claim.
+      below(g.thumbAcross, 0.02, 0.28),
+      above(g.thumbAlong, 1.05, 0.3),
       above(g.fingers.thumb.extension, 0.3),
-      // Nothing is lying over the thumb, so no finger is propped up at the
-      // knuckle. Read off the fingers, which are visible, rather than off the
-      // thumb, which in T/N/M is not. See HandGeometry.knuckleBend.
+      // Nothing is lying over the thumb, so the fingertips reach the palm and
+      // no finger is propped up at the knuckle. Both read off the fingers,
+      // which are visible, rather than off the thumb, which in T/N/M is not.
       drapes(g, 0),
+      lifts(g, TIP_ON_PALM),
     ]),
   ),
 
@@ -187,6 +247,10 @@ export const LETTER_TEMPLATES: readonly LetterTemplate[] = [
       // and the bend piles up past them — the opposite of a draped letter.
       drapes(g, 0),
       bendsAtKnuckle(g, 0.24),
+      // The thumb is across the palm rather than under the fingers, so the tips
+      // come to rest on it. Undraped like A and S, lifted like T, N and M —
+      // which is the corner of the two-feature space that only E occupies.
+      lifts(g, TIP_ON_THUMB),
     ]),
   ),
 
@@ -253,12 +317,15 @@ export const LETTER_TEMPLATES: readonly LetterTemplate[] = [
   T('M', 'Thumb tucked under three fingers.', (g) =>
     geomean([
       down(g.four[0]), down(g.four[1]), down(g.four[2]), down(g.four[3]),
-      // Thumb tip emerges past the ring knuckle, near the pinky.
-      above(g.thumbAcross, 0.62, 0.25),
-      below(g.thumbAcross, 1.15, 0.25),
+      // Thumb tip emerges past the ring knuckle, near the pinky — but it is
+      // underneath three fingers, so this is a prior, not a requirement.
+      tuckedNear(g, 0.85, 0.4),
       down(g.fingers.thumb.extension),
-      // Three fingers over the thumb.
+      // Three fingers over the thumb, holding their tips off the palm. This is
+      // what actually has to carry M, because it is the only part of the letter
+      // the camera can see.
       drapes(g, 3),
+      lifts(g, TIP_ON_THUMB),
     ]),
   ),
 
@@ -266,10 +333,12 @@ export const LETTER_TEMPLATES: readonly LetterTemplate[] = [
     geomean([
       down(g.four[0]), down(g.four[1]), down(g.four[2]), down(g.four[3]),
       // Between the middle and ring knuckles: further in than T, short of M.
-      near(g.thumbAcross, 0.55, 0.3),
+      // Hidden under two fingers, so it only shades the choice — see tuckedNear.
+      tuckedNear(g, 0.55),
       down(g.fingers.thumb.extension),
-      // Two fingers over the thumb.
+      // Two fingers over the thumb, holding their tips off the palm.
       drapes(g, 2),
+      lifts(g, TIP_ON_THUMB),
     ]),
   ),
 
@@ -320,19 +389,24 @@ export const LETTER_TEMPLATES: readonly LetterTemplate[] = [
       // the knuckle line but stays low against it rather than poking through.
       near(g.thumbAcross, 0.45, 0.45),
       below(g.thumbAlong, 1.05, 0.3),
-      // Across the front, so nothing is underneath propping a finger up.
+      // Across the front, so nothing is underneath propping a finger up and the
+      // fingertips still reach the palm.
       drapes(g, 0),
+      lifts(g, TIP_ON_PALM),
     ]),
   ),
 
   T('T', 'Fist with the thumb poking between index and middle fingers.', (g) =>
     geomean([
       down(g.four[0]), down(g.four[1]), down(g.four[2]), down(g.four[3]),
-      // Just inside the index knuckle — the shallowest of the tucked thumbs.
-      near(g.thumbAcross, 0.3, 0.28),
+      // Just inside the index knuckle — the shallowest of the tucked thumbs,
+      // and the one MediaPipe's guess lands nearest to, which is exactly why it
+      // cannot be trusted to separate T from A. A prior, not a requirement.
+      tuckedNear(g, 0.3),
       down(g.fingers.thumb.extension),
-      // One finger over the thumb.
+      // One finger over the thumb, holding its tip off the palm.
       drapes(g, 1),
+      lifts(g, TIP_ON_THUMB),
     ]),
   ),
 
