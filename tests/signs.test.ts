@@ -19,6 +19,7 @@ import {
   recognizeSign,
   signHint,
 } from '@/modes/signs/signTemplates';
+import { SIGN_CASES, caseFor, IDLE } from './helpers/signCases';
 import { SignSegmenter } from '@/modes/signs/fewShot';
 import { DEFAULT_SETTINGS } from '@/settings/defaults';
 import { CONFUSION_CLUSTERS, LETTER_TEMPLATES } from '@/modes/fingerspell/letterTemplates';
@@ -712,5 +713,102 @@ describe('fingers lying over the thumb', () => {
     // A nudge, not a veto: an unambiguous A stays an A even if the fingers
     // happen to read as draped.
     expect(best(geometry({ ext: [0.6, 0.05, 0.05, 0.05, 0.05], thumbAcross: 0, knuckleBend: TWO_OVER }))).toBe('A');
+  });
+});
+
+/**
+ * Every sign, against a canonical observation of itself.
+ *
+ * The vocabulary is hand-written geometry rules, and the way hand-written rules
+ * fail as they multiply is not a crash — it is one template quietly shadowing
+ * another. Somebody signs WAIT and gets WANT, and nothing anywhere reports a
+ * problem.
+ *
+ * These caught four real collisions the moment they were written, on a
+ * vocabulary that had just grown from 29 signs to 49:
+ *
+ *   HELLO ate THANK-YOU     — both a flat hand near the face travelling out,
+ *                             and HELLO asked for strictly less. Fixed by
+ *                             requiring a salute to go out and not down.
+ *   EAT ate HOME            — both flattened-O at the face, separated only by
+ *                             how far off-centre the hand sits.
+ *   THANK-YOU tied BAD      — the same hand leaving the same chin in the same
+ *                             direction. Only the palm turning over tells them
+ *                             apart, which is why orientation had to exist.
+ *   WANT tied BIG           — the same two claw hands travelling the same
+ *                             distance in opposite directions.
+ *
+ * See tests/helpers/signCases.ts for what these do and do not prove. Short
+ * version: they show the rules are mutually consistent, not that they work on a
+ * real signer.
+ */
+describe('every built-in sign', () => {
+  it('has a canonical observation, and no observation is orphaned', () => {
+    // Adding a sign without a case here would let it skip every check below.
+    expect(BUILT_IN_GLOSSES.filter((g) => !SIGN_CASES[g])).toEqual([]);
+    expect(Object.keys(SIGN_CASES).filter((g) => !BUILT_IN_GLOSSES.includes(g))).toEqual([]);
+  });
+
+  it.each(BUILT_IN_GLOSSES.map((g) => [g]))('%s wins its own observation', (gloss) => {
+    const scored = SIGN_TEMPLATES.map((t) => ({ gloss: t.gloss, score: t.score(caseFor(gloss)) })).sort(
+      (a, b) => b.score - a.score,
+    );
+    expect(scored[0].gloss).toBe(gloss);
+  });
+
+  it.each(BUILT_IN_GLOSSES.map((g) => [g]))('%s is what gets offered, and clears the floor', (gloss) => {
+    const candidates = recognizeSign(caseFor(gloss));
+    expect(candidates.length).toBeGreaterThan(0);
+    expect(candidates[0].gloss).toBe(gloss);
+    expect(candidates[0].raw).toBeGreaterThan(REJECTION_FLOOR);
+  });
+
+  /**
+   * The clause that makes a sign a sign rather than a description of resting.
+   *
+   * MOTHER was written as "open hand, at your face, one hand, not moving" and
+   * scored 0.50 on a relaxed hand resting near the face — over the rejection
+   * floor, from a hand doing nothing. Every clause it had was also a true
+   * statement about rest.
+   *
+   * So: no sign may match an idle hand, checked in every zone, because a
+   * template whose conditions are all satisfied by stillness will fire on
+   * stillness however good its handshape gate is.
+   */
+  it.each([['head'], ['face'], ['neck'], ['chest'], ['waist']] as const)(
+    'stays silent for a relaxed hand idling in the %s zone',
+    (zone) => {
+      for (const x of [0.05, 0.3, 0.55]) {
+        const idle = observation({
+          dominant: { shape: IDLE(), zone, from: { x, y: 0 }, path: 0.04 },
+        });
+        const best = Math.max(...SIGN_TEMPLATES.map((t) => t.score(idle)));
+        expect(best).toBeLessThan(REJECTION_FLOOR);
+        expect(recognizeSign(idle)).toHaveLength(0);
+      }
+    },
+  );
+
+  /**
+   * CONFUSABLE has to keep up with the vocabulary, or the correction sheet
+   * stops offering the sign the user actually made. Anything scoring this close
+   * to a sign's own observation is a real near-miss and must be listed.
+   */
+  it.each(BUILT_IN_GLOSSES.map((g) => [g]))('%s lists its real near-misses', (gloss) => {
+    const near = SIGN_TEMPLATES.filter(
+      (t) => t.gloss !== gloss && t.score(caseFor(gloss)) >= 0.5,
+    ).map((t) => t.gloss);
+    const listed = CONFUSABLE[gloss] ?? [];
+    expect(near.filter((g) => !listed.includes(g))).toEqual([]);
+  });
+
+  it('names confusions symmetrically', () => {
+    // Whoever signed it needs the other one offered, whichever way round the
+    // recogniser got it wrong.
+    for (const [gloss, others] of Object.entries(CONFUSABLE)) {
+      for (const other of others) {
+        expect(CONFUSABLE[other] ?? []).toContain(gloss);
+      }
+    }
   });
 });

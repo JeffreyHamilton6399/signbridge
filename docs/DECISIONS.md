@@ -121,7 +121,7 @@ sign recognition work with no training at all, the answer was to do for whole
 signs what `letterTemplates.ts` already does for the manual alphabet: write the
 geometry down.
 
-- **29 built-in signs as rules** (`signTemplates.ts`). Chosen for signs that are
+- **Built-in signs as rules** (`signTemplates.ts`), 29 at first and 49 now. Chosen for signs that are
   common *and* geometrically separable from each other. Signs differing only by a
   handshape the camera cannot resolve are deliberately absent — including them
   would mean guessing.
@@ -1035,3 +1035,82 @@ means the model learned particular people rather than the language.
   contain no hands, so there is nothing for a landmarker to find.
 - None of this puts a model in `public/models/`. The app still ships none, and
   the smoke job fails if a synthetic one ever leaks into the tree.
+
+## Signs: 29 to 49, orientation, and a net to catch collisions
+
+### Orientation was missing, and it was capping the vocabulary
+
+A sign is handshape, location, movement, orientation, and non-manual markers.
+The recogniser read three of them. That is not a gap in polish — a whole class
+of signs is *defined* by the rotation and is otherwise identical to a sign
+already in the file. Two flat hands in contact is SCHOOL, MONEY, STOP or BOOK
+depending on almost nothing else.
+
+`HandTrack` now carries `palmTurn` and `pointTurn`, measured start to end rather
+than as a total swing: what separates these signs is which way the palm ends up
+facing, not how much it wobbled getting there. BOOK, BAD and START are built on
+it, and THANK-YOU needed it defensively — see below.
+
+Non-manual markers remain unseen. That gap is much harder and is not close.
+
+### 20 new signs, and the test that made adding them safe
+
+Hand-written rules collide as they multiply, and the failure is silent: not a
+crash, just one template quietly shadowing another, so somebody signs WAIT and
+gets WANT and nothing anywhere reports a problem.
+
+So every sign now has a canonical observation of itself
+(`tests/helpers/signCases.ts`), and the suite asserts each one wins its own.
+Written against the freshly-expanded 49, it immediately found four real
+collisions:
+
+| collision | cause | fix |
+|---|---|---|
+| HELLO ate THANK-YOU | both a flat hand near the face travelling out, and HELLO asked for strictly less | a salute goes out, not down |
+| EAT ate HOME | both flattened-O at the face; only how far off-centre separates them | the canonical HOME was not far enough onto the cheek |
+| THANK-YOU tied BAD | same hand, same chin, same direction | the palm turning over — orientation, newly available |
+| WANT tied BIG | same two claw hands, same distance, opposite directions | WANT must not be spreading |
+
+The lesson generalises: **the template that asks for the least wins**, and a new
+sign is most dangerous to the one it resembles that was written loosest.
+
+### Anything satisfied by doing nothing will fire on nothing
+
+MOTHER was written as "open hand, at your face, one hand, not moving". Every one
+of those clauses is also a true statement about a hand resting near your face,
+and it scored 0.50 there — over the rejection floor, from a hand doing nothing.
+
+MOTHER, FATHER and KNOW are taps in their citation form, so requiring the tap is
+both more correct and what makes them separable from rest at all.
+
+MY had no tap available — it is a flat hand held on the chest and nothing else —
+and scored exactly 0.50 on an idle hand at chest height, a pre-existing bug the
+old tests missed because they never checked that zone. Two changes, both
+specific to hold-only signs:
+
+- `stillness`, stricter than `held`, because a sign with no movement cannot
+  afford a forgiving definition of "stayed put". MY had been scoring 0.82 on
+  BAD — a hand that crosses two thirds of a shoulder width — on the strength of
+  where it finished.
+- `unambiguous`, which **sharpens the gate rather than adding a clause**. As a
+  clause it was averaged in with five others that a resting hand satisfies
+  perfectly, and a 0.25 diluted across seven terms moved the score not at all.
+  The gate is a ceiling, so lowering it is the only move that cannot be averaged
+  away.
+
+An idle hand is now checked in every zone, at three distances from the midline,
+and tops out at 0.25 against a floor of 0.45.
+
+### CONFUSABLE is measured now, not guessed
+
+Every pair in it comes from a sign scoring above 0.5 on another sign's canonical
+observation, and a test fails if a real near-miss goes unlisted or if the map is
+asymmetric — whoever signed it needs the other offered, whichever way round the
+recogniser got it wrong. Three asymmetries existed and are fixed.
+
+### What this still is not
+
+Idealised observations. Passing means the rules are mutually *consistent* — no
+two templates describe the same thing — and nothing about accuracy on a real
+signer, which needs recordings and a held-out-signer evaluation. It is a lower
+bound on how bad things can be, not an estimate of how good they are.

@@ -147,6 +147,10 @@ export interface TrackSpec {
   closedness?: number;
   roundness?: number;
   extent?: { x: number; y: number };
+  /** Palm rotation over the window. + = turned to face front. */
+  palmTurn?: number;
+  /** Fingers tipping up (+) or down (-) over the window. */
+  pointTurn?: number;
 }
 
 export function track(spec: TrackSpec): HandTrack {
@@ -164,6 +168,8 @@ export function track(spec: TrackSpec): HandTrack {
     path: spec.path ?? straightPath,
     extent: spec.extent ?? { x: Math.abs(net.x), y: Math.abs(net.y) },
     reversals: spec.reversals ?? 0,
+    palmTurn: spec.palmTurn ?? 0,
+    pointTurn: spec.pointTurn ?? 0,
     closedness: spec.closedness ?? 0,
     roundness: spec.roundness ?? 0,
     zones: spec.startZone && spec.startZone !== spec.zone ? [spec.startZone, spec.zone] : [spec.zone],

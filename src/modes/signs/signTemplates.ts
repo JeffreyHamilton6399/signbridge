@@ -10,11 +10,18 @@
  *
  * WHAT YOU SHOULD EXPECT
  * ----------------------
- * This is 29 signs, not a language. It is chosen for signs that are (a) common
+ * This is 49 signs, not a language. It is chosen for signs that are (a) common
  * in conversation and (b) geometrically distinct from each other — which is a
  * real constraint, not a shortcut. Signs that differ only by a subtle handshape
  * the camera cannot resolve are deliberately absent, because including them
  * would mean guessing.
+ *
+ * Every sign here is checked against a canonical observation of itself and of
+ * every other sign (tests/helpers/signCases.ts). That is what makes the list
+ * safe to grow: hand-written rules collide as they multiply, and the way that
+ * shows up is not a crash but one template quietly shadowing another. Four such
+ * collisions existed the moment this went from 29 signs to 49, and the test
+ * named all four. Do not add a sign without adding its case.
  *
  * Accuracy is well below a trained model's and varies hugely with lighting,
  * framing and signing style. Every match carries its confidence, the rejection
@@ -22,9 +29,14 @@
  * least-bad guess, and CONFUSABLE below names the pairs this genuinely cannot
  * separate. Do not raise the numbers by lowering the floor.
  *
- * A sign is handshape + location + movement + orientation. Non-manual markers —
- * face and eyebrows — carry grammar this does not see at all, so these are
- * lexical guesses, not meaning.
+ * A sign is handshape + location + movement + orientation. All four are now
+ * read; orientation arrived last, and its absence had been quietly capping what
+ * could be expressed here — BOOK is two flat palms in contact, which without
+ * rotation is also SCHOOL, MONEY and STOP.
+ *
+ * Non-manual markers — face and eyebrows — carry grammar this does not see at
+ * all, so these are lexical guesses, not meaning. That gap is much harder than
+ * the orientation one and is not on the near horizon.
  */
 import { handshape } from '@/features/handshapes';
 import type { HandshapeName } from '@/features/handshapes';
@@ -63,8 +75,54 @@ const movedOut = (t: HandTrack | null) => (t ? ramp(t.net.x, 0.04, 0.32) : 0);
 const movedDown = (t: HandTrack | null) => (t ? ramp(t.net.y, 0.05, 0.34) : 0);
 const movedUp = (t: HandTrack | null) => (t ? ramp(-t.net.y, 0.05, 0.34) : 0);
 
+/**
+ * Genuinely motionless, for signs that are nothing but a shape held in a place.
+ *
+ * {@link held} is deliberately forgiving, because most signs that 'stay put'
+ * still drift. A hold-only sign cannot afford that: MY is a flat hand at the
+ * chest and nothing else, so it scored 0.82 on BAD — a flat hand that starts at
+ * the chin, travels two thirds of a shoulder width and ends at the chest — on
+ * the strength of where it finished.
+ */
+const stillness = (t: HandTrack | null) => (t ? 1 - ramp(t.path, 0.15, 0.5) : 0);
+
+/**
+ * The handshape is unambiguous, not merely the best available reading.
+ *
+ * For a sign made of a handshape, a place and stillness, the handshape is the
+ * only evidence there is — the other clauses are also true of a hand doing
+ * nothing at all. A relaxed half-open hand reads 0.5 as 'flat', which was
+ * enough to put MY over the rejection floor on an idle hand at chest height.
+ *
+ * So hold-only signs are held to a higher bar: be clearly this handshape, or do
+ * not fire. Signs with a movement or a contact to their name do not need this,
+ * because those clauses already fail on a hand at rest.
+ *
+ * This sharpens the *gate* rather than adding a clause, and that distinction
+ * matters. As a clause it was averaged in with five others that a resting hand
+ * satisfies perfectly, and a 0.25 diluted across seven terms left the score
+ * exactly where it started. The gate is a ceiling, so lowering it is the only
+ * move that cannot be averaged away.
+ */
+const unambiguous = (shapeScore: number) => shapeScore * ramp(shapeScore, 0.45, 0.65);
+
 /** Stayed put — a held sign rather than a travelling one. */
 const held = (t: HandTrack | null) => (t ? 1 - ramp(t.path, 0.3, 1.0) : 0);
+
+/**
+ * A tap: the hand stays put but reverses at least once.
+ *
+ * This exists because of a false positive that is worth remembering. MOTHER was
+ * written as open hand + face zone + one hand + held, and every one of those
+ * clauses is *also a description of a hand resting near your face*. It scored
+ * 0.50 on exactly the idle pose the rejection floor was built to silence.
+ *
+ * Anything whose clauses are all satisfied by doing nothing will fire on doing
+ * nothing, however good the handshape gate is. These signs are taps in their
+ * citation form, so requiring the tap is both more correct and what makes them
+ * distinguishable from rest at all.
+ */
+const tapped = (t: HandTrack | null) => (t ? ramp(t.reversals, 0, 1) : 0);
 
 /** Repeated back-and-forth movement: taps, shakes, nods. */
 const repeated = (t: HandTrack | null, min = 2) =>
@@ -83,6 +141,61 @@ const centred = (t: HandTrack | null) => (t ? 1 - ramp(Math.abs(t.mid.pos.x), 0.
 const lateral = (t: HandTrack | null) => (t ? ramp(Math.abs(t.mid.pos.x), 0.25, 0.55) : 0);
 
 const yes = (b: boolean) => (b ? 1 : 0.06);
+
+// --- orientation, the fourth parameter --------------------------------------
+//
+// A sign is handshape, location, movement, *orientation*, and non-manual
+// markers. Until HandTrack carried palmTurn and pointTurn this recogniser had
+// three of the five, and the missing one is not a detail: a whole class of
+// signs is defined by the rotation and is otherwise identical to another sign
+// already in this file. Two flat hands in contact is SCHOOL, MONEY, STOP or
+// BOOK depending on almost nothing else.
+//
+// Non-manual markers remain unseen, and that is a much harder gap — see the
+// note at the top of this file.
+
+/** Palm rotated to face the signer's front — supination, as in BOOK opening. */
+const turnsPalmUp = (t: HandTrack | null) => (t ? ramp(t.palmTurn, 0.25, 0.75) : 0);
+/** Palm rotated away, as in BAD flipping over. */
+const turnsPalmDown = (t: HandTrack | null) => (t ? ramp(-t.palmTurn, 0.25, 0.75) : 0);
+/** Rotated, in either direction — a twist rather than a hold. */
+const twists = (t: HandTrack | null) => (t ? ramp(Math.abs(t.palmTurn), 0.3, 0.8) : 0);
+/** Fingers tipped down over the window, as in a hand flipping over. */
+const tipsDown = (t: HandTrack | null) => (t ? ramp(-t.pointTurn, 0.3, 0.9) : 0);
+
+// --- two-handed relationships ------------------------------------------------
+
+/**
+ * The hands travelled away from each other.
+ *
+ * Read from the two tracks' net x rather than from a gap measurement, because
+ * `minHandGap` only records the closest approach — it cannot tell BIG from
+ * SMALL, which are the same two hands at the same two distances in opposite
+ * order. In the mirrored frame +x is outward on the dominant side, so hands
+ * separating means the dominant goes positive and the other negative.
+ */
+const spreadApart = (o: SignObservation) =>
+  o.dominant && o.other
+    ? Math.min(ramp(o.dominant.net.x, 0.05, 0.3), ramp(-o.other.net.x, 0.05, 0.3))
+    : 0;
+
+/** The hands travelled toward each other. */
+const cameTogether = (o: SignObservation) =>
+  o.dominant && o.other
+    ? Math.min(ramp(-o.dominant.net.x, 0.05, 0.3), ramp(o.other.net.x, 0.05, 0.3))
+    : 0;
+
+/** Both hands make the same shape — the common case for two-handed signs. */
+const bothShape = (o: SignObservation, name: HandshapeName) =>
+  Math.min(shape(o.dominant, name), shape(o.other, name));
+
+/** Both hands make the same shape at some point, for signs whose shape changes. */
+const bothShapeAnywhere = (o: SignObservation, name: HandshapeName) =>
+  Math.min(shapeAnywhere(o.dominant, name), shapeAnywhere(o.other, name));
+
+/** Shape changed from one to another across the window, as in MANY or SLEEP. */
+const shapeChanges = (t: HandTrack | null, from: HandshapeName, to: HandshapeName) =>
+  t ? Math.min(handshape(from, t.start.geometry), handshape(to, t.end.geometry)) : 0;
 
 /** Zone check against a specific moment rather than the whole window. */
 function zoneAt(track: HandTrack | null, when: 'start' | 'end', ...zones: Zone[]): number {
@@ -144,6 +257,10 @@ export const SIGN_TEMPLATES: readonly SignTemplate[] = [
       inZone(o.dominant, 'head', 'face'),
       movedOut(o.dominant),
       travelled(o.dominant, 0.3),
+      // A salute goes out, not down. Without this HELLO also describes
+      // THANK-YOU — same flat hand, same region, also travelling outward — and
+      // won it, because HELLO asks for less.
+      1 - movedDown(o.dominant),
     ]),
   ),
 
@@ -153,6 +270,10 @@ export const SIGN_TEMPLATES: readonly SignTemplate[] = [
       zoneAt(o.dominant, 'start', 'face', 'neck'),
       movedDown(o.dominant),
       travelled(o.dominant, 0.3),
+      // The palm stays turned toward you the whole way. BAD is the same hand
+      // leaving the same chin in the same direction and turning over as it
+      // goes, so without orientation the two are one sign.
+      1 - Math.max(turnsPalmDown(o.dominant), tipsDown(o.dominant)),
     ]),
   ),
 
@@ -232,10 +353,13 @@ export const SIGN_TEMPLATES: readonly SignTemplate[] = [
   ),
 
   S('MY', 'Flat hand resting flat on your chest.', (o) =>
-    gated(shape(o.dominant, 'flat'), [
+    gated(unambiguous(shape(o.dominant, 'flat')), [
       yes(!o.twoHanded),
       inZone(o.dominant, 'chest'),
-      held(o.dominant),
+      // A hold-only sign: no movement, no contact, no shape change. Both of
+      // these are stricter than their usual counterparts for that reason —
+      // there is nothing else here to rule anything out.
+      stillness(o.dominant),
       centred(o.dominant),
     ]),
   ),
@@ -380,36 +504,276 @@ export const SIGN_TEMPLATES: readonly SignTemplate[] = [
       inZone(o.dominant, 'chest', 'waist'),
       yes(!o.handsContact),
       travelled(o.dominant, 0.25),
+      // Stated as 'not spreading' rather than 'coming together': WANT draws the
+      // hands toward the body, which barely changes their separation, so
+      // requiring convergence would fail on the real sign. BIG is the same two
+      // claw hands travelling the same distance in the opposite direction, and
+      // this is the only thing between them.
+      1 - spreadApart(o),
+    ]),
+  ),
+
+  // --- at the forehead ------------------------------------------------------
+  //
+  // The head band is barely used above, and it is where a lot of common
+  // vocabulary lives. These three sit in it and are separated by handshape
+  // alone — open, flat, index — which is the separation the handshape gate is
+  // best at. FATHER and MOTHER are the same sign at forehead and chin, which is
+  // genuinely how they are formed and genuinely the riskiest pair here: it
+  // rests entirely on the head/face zone boundary. Both are in CONFUSABLE.
+
+  S('FATHER', 'Open hand, thumb tapping your forehead.', (o) =>
+    gated(shape(o.dominant, 'open'), [
+      yes(!o.twoHanded),
+      inZone(o.dominant, 'head'),
+      held(o.dominant),
+      tapped(o.dominant),
+    ]),
+  ),
+
+  S('KNOW', 'Flat hand tapping your forehead.', (o) =>
+    gated(shape(o.dominant, 'flat'), [
+      yes(!o.twoHanded),
+      inZone(o.dominant, 'head'),
+      // HELLO is the same hand in the same place travelling outward; this one
+      // stays put. That is the whole difference and it has to carry weight.
+      held(o.dominant),
+      1 - movedOut(o.dominant),
+      tapped(o.dominant),
+    ]),
+  ),
+
+  S('THINK', 'Index finger touching your temple.', (o) =>
+    gated(shape(o.dominant, 'index'), [
+      yes(!o.twoHanded),
+      inZone(o.dominant, 'head'),
+      held(o.dominant),
+    ]),
+  ),
+
+  // --- at the chin and face -------------------------------------------------
+
+  S('MOTHER', 'Open hand, thumb tapping your chin.', (o) =>
+    gated(shape(o.dominant, 'open'), [
+      yes(!o.twoHanded),
+      inZone(o.dominant, 'face'),
+      held(o.dominant),
+      tapped(o.dominant),
+    ]),
+  ),
+
+  S('SLEEP', 'Open hand down over your face, closing as it falls.', (o) =>
+    gated(shapeChanges(o.dominant, 'open', 'flatO'), [
+      yes(!o.twoHanded),
+      zoneAt(o.dominant, 'start', 'face', 'head'),
+      movedDown(o.dominant),
+    ]),
+  ),
+
+  S('BAD', 'Flat hand from your chin, turning over as it comes down.', (o) =>
+    gated(shape(o.dominant, 'flat'), [
+      // One-handed is what separates this from GOOD, which lands on the other
+      // palm; the turn is what separates it from a hand simply dropping.
+      yes(!o.twoHanded),
+      zoneAt(o.dominant, 'start', 'face'),
+      movedDown(o.dominant),
+      Math.max(turnsPalmDown(o.dominant), tipsDown(o.dominant)),
+    ]),
+  ),
+
+  S('FINE', 'Open hand, thumb on your chest, moving forward and out.', (o) =>
+    gated(shape(o.dominant, 'open'), [
+      yes(!o.twoHanded),
+      inZone(o.dominant, 'chest', 'neck'),
+      movedOut(o.dominant),
+    ]),
+  ),
+
+  // --- two-handed, rotation-defined ----------------------------------------
+
+  S('BOOK', 'Flat palms together, opening like a book.', (o) =>
+    gated(bothShape(o, 'flat'), [
+      yes(o.twoHanded),
+      yes(o.handsContact),
+      // Without this clause BOOK is indistinguishable from SCHOOL, MONEY and
+      // STOP. It is the whole sign.
+      turnsPalmUp(o.dominant),
+      inZone(o.dominant, 'chest', 'waist'),
+    ]),
+  ),
+
+  S('MANY', 'Both fists at your chest, flicking open into fives.', (o) =>
+    gated(
+      Math.min(shapeChanges(o.dominant, 'fist', 'open'), shapeChanges(o.other, 'fist', 'open')),
+      [yes(o.twoHanded), inZone(o.dominant, 'chest', 'neck'), yes(!o.handsContact)],
+    ),
+  ),
+
+  S('BIG', 'Both hands facing each other, pulling wide apart.', (o) =>
+    gated(bothShapeAnywhere(o, 'claw'), [
+      yes(o.twoHanded),
+      spreadApart(o),
+      yes(!o.handsContact),
+      inZone(o.dominant, 'chest', 'neck'),
+    ]),
+  ),
+
+  S('SMALL', 'Both flat hands facing each other, closing together.', (o) =>
+    gated(bothShape(o, 'flat'), [
+      yes(o.twoHanded),
+      cameTogether(o),
+      inZone(o.dominant, 'chest', 'waist'),
+    ]),
+  ),
+
+  // --- two-handed, at the chest --------------------------------------------
+
+  S('HAPPY', 'Flat hands brushing up your chest, over and over.', (o) =>
+    gated(bothShape(o, 'flat'), [
+      yes(o.twoHanded),
+      inZone(o.dominant, 'chest'),
+      repeated(o.dominant, 2),
+      movedUp(o.dominant),
+    ]),
+  ),
+
+  S('TIRED', 'Both hands bent, fingertips on your chest, sinking down.', (o) =>
+    gated(bothShape(o, 'bent'), [
+      yes(o.twoHanded),
+      inZone(o.dominant, 'chest'),
+      movedDown(o.dominant),
+    ]),
+  ),
+
+  S('MEET', 'Two index fingers upright, coming together.', (o) =>
+    gated(bothShape(o, 'index'), [
+      yes(o.twoHanded),
+      cameTogether(o),
+      yes(o.handsContact),
+      inZone(o.dominant, 'chest', 'neck'),
+    ]),
+  ),
+
+  S('AGAIN', 'Bent hand arcing over and down into your flat palm.', (o) =>
+    gated(Math.min(shapeAnywhere(o.dominant, 'bent'), shape(o.other, 'flat')), [
+      yes(o.twoHanded),
+      yes(o.handsContact),
+      yes(o.contacts <= 1),
+      inZone(o.dominant, 'chest', 'waist'),
+    ]),
+  ),
+
+  S('START', 'Index finger twisting in your other flat palm.', (o) =>
+    gated(Math.min(shape(o.dominant, 'index'), shape(o.other, 'flat')), [
+      yes(o.twoHanded),
+      yes(o.handsContact),
+      held(o.dominant),
+      // The finger stays put and turns. Without this it is a fingertip resting
+      // in a palm, which is most of the two-handed contact signs above.
+      twists(o.dominant),
+      inZone(o.dominant, 'chest', 'waist'),
+    ]),
+  ),
+
+  S('MONEY', 'Flattened-O hand tapping into your flat palm.', (o) =>
+    gated(Math.min(shapeAnywhere(o.dominant, 'flatO'), shape(o.other, 'flat')), [
+      yes(o.twoHanded),
+      yes(o.contacts >= 2),
+      inZone(o.dominant, 'chest', 'waist'),
+    ]),
+  ),
+
+  S('CAR', 'Both fists gripping a wheel, turning it back and forth.', (o) =>
+    gated(bothShape(o, 'fist'), [
+      yes(o.twoHanded),
+      yes(!o.handsContact),
+      repeated(o.dominant, 2),
+      inZone(o.dominant, 'chest', 'waist'),
+    ]),
+  ),
+
+  S('COFFEE', 'One fist circling on top of the other.', (o) =>
+    gated(bothShape(o, 'fist'), [
+      yes(o.twoHanded),
+      circular(o.dominant),
+      inZone(o.dominant, 'chest', 'waist'),
+    ]),
+  ),
+
+  S('WAIT', 'Both hands curved, fingers wiggling in front of you.', (o) =>
+    gated(bothShape(o, 'claw'), [
+      yes(o.twoHanded),
+      yes(!o.handsContact),
+      repeated(o.dominant, 2),
+      // Small movement — WANT is the same handshape travelling toward you.
+      1 - travelled(o.dominant, 0.3),
+      inZone(o.dominant, 'chest', 'waist'),
     ]),
   ),
 ];
 
-/** Signs this genuinely cannot tell apart, surfaced in the UI. */
+/**
+ * Signs this genuinely cannot tell apart, surfaced in the UI so a wrong guess
+ * is one tap from the right answer.
+ *
+ * Every pair here is *measured*, not guessed: tests/helpers/signCases.ts holds a
+ * canonical observation of each sign, and anything else scoring above 0.35 on
+ * it is a real near-miss for that sign. A test keeps this map and those scores
+ * in step, so a newly added sign that shadows an existing one either gets fixed
+ * or gets listed — it cannot quietly go unmentioned.
+ *
+ * Symmetric by construction: if A can be mistaken for B then B belongs in A's
+ * list too, because the user who signed either one needs the other offered.
+ */
 export const CONFUSABLE: Record<string, readonly string[]> = {
-  HELLO: ['THANK-YOU'],
-  'THANK-YOU': ['HELLO', 'GOOD'],
-  GOOD: ['THANK-YOU', 'STOP'],
-  EAT: ['HOME', 'DRINK'],
+  // The fingerspelled-letter equivalent of a minimal pair: same hand, same
+  // place, separated only by how far it travels or which way it turns.
+  HELLO: ['THANK-YOU', 'KNOW'],
+  'THANK-YOU': ['HELLO', 'GOOD', 'BAD', 'TIRED', 'HUNGRY'],
+  GOOD: ['THANK-YOU', 'STOP', 'BAD', 'AGAIN'],
+  BAD: ['THANK-YOU', 'GOOD'],
+  EAT: ['HOME', 'DRINK', 'SLEEP'],
   HOME: ['EAT'],
   DRINK: ['EAT', 'HUNGRY'],
-  ME: ['YOU', 'MY'],
+  SLEEP: ['EAT'],
+  DEAF: ['THINK'],
+  THINK: ['DEAF', 'KNOW', 'ME', 'START'],
+  KNOW: ['THINK', 'HELLO', 'FATHER'],
+  FATHER: ['MOTHER', 'KNOW'],
+  MOTHER: ['FATHER'],
+  ME: ['YOU', 'MY', 'THINK', 'MEET', 'START', 'WHERE'],
   YOU: ['ME', 'WHERE'],
-  MY: ['ME', 'PLEASE'],
+  MY: ['ME', 'PLEASE', 'HAPPY'],
   PLEASE: ['SORRY', 'MY'],
-  SORRY: ['PLEASE', 'YES'],
-  YES: ['SORRY', 'NO'],
-  NO: ['YES', 'NAME'],
-  WHERE: ['NO', 'YOU'],
-  STOP: ['GOOD', 'SCHOOL'],
-  SCHOOL: ['STOP', 'MORE'],
-  MORE: ['SCHOOL', 'NAME'],
-  WORK: ['LOVE'],
-  LOVE: ['WORK'],
-  FINISH: ['WHAT'],
-  WHAT: ['FINISH', 'WANT'],
-  WANT: ['WHAT'],
+  SORRY: ['PLEASE', 'YES', 'COFFEE'],
+  YES: ['SORRY', 'NO', 'WORK'],
+  NO: ['YES', 'NAME', 'WHERE'],
+  WHERE: ['NO', 'YOU', 'ME'],
+  HUNGRY: ['THANK-YOU', 'DRINK'],
+  FINE: ['FINISH'],
+  STOP: ['GOOD', 'SCHOOL', 'AGAIN', 'TIRED', 'HELP'],
+  SCHOOL: ['STOP', 'MORE', 'MONEY', 'SMALL', 'BOOK'],
+  MORE: ['SCHOOL', 'NAME', 'MONEY'],
+  MONEY: ['SCHOOL', 'MORE', 'AGAIN'],
+  AGAIN: ['STOP', 'MONEY', 'GOOD'],
+  WORK: ['LOVE', 'YES', 'CAR', 'MANY'],
+  LOVE: ['WORK', 'MANY', 'COFFEE'],
+  MANY: ['LOVE', 'WORK'],
+  CAR: ['WORK'],
+  COFFEE: ['LOVE', 'SORRY'],
+  FINISH: ['WHAT', 'WANT', 'BIG', 'FINE'],
+  WHAT: ['FINISH', 'WANT', 'WAIT'],
+  WANT: ['WHAT', 'WAIT', 'BIG', 'FINISH'],
+  WAIT: ['WANT', 'WHAT'],
+  BIG: ['WANT', 'FINISH'],
+  SMALL: ['SCHOOL'],
   NAME: ['MORE', 'NO'],
   HELP: ['STOP'],
+  BOOK: ['SCHOOL'],
+  TIRED: ['THANK-YOU', 'STOP'],
+  MEET: ['ME'],
+  START: ['ME', 'THINK'],
+  HAPPY: ['MY'],
 };
 
 export const BUILT_IN_GLOSSES: readonly string[] = SIGN_TEMPLATES.map((t) => t.gloss);

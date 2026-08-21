@@ -130,6 +130,25 @@ export interface HandTrack {
   closedness: number;
   /** 0 = movement confined to one axis, 1 = equal on both (a circle or arc). */
   roundness: number;
+  /**
+   * How far the palm rotated over the window. + = turned to face the signer's
+   * front, - = turned away. Roughly -2..2; anything past about 0.7 is a
+   * deliberate twist rather than drift.
+   *
+   * Orientation is the fourth parameter of a sign, alongside handshape,
+   * location and movement, and until this existed the recogniser tracked three
+   * of them. That is not a rounding error in coverage — a whole class of signs
+   * is *defined* by the rotation and is otherwise identical to another sign.
+   * BOOK is two flat palms that open; without rotation it is a pair of flat
+   * hands in contact, which is also SCHOOL, MONEY and half a dozen others.
+   */
+  palmTurn: number;
+  /**
+   * How far the fingers tipped between pointing up and pointing down, over the
+   * window. + = tipped up, - = tipped down. Same scale and reasoning as
+   * {@link palmTurn}; this is the other half of orientation.
+   */
+  pointTurn: number;
   /** Every zone the hand passed through, in order of first visit. */
   zones: Zone[];
   /** Fraction of frames in the single most-occupied zone. */
@@ -223,6 +242,11 @@ function buildTrack(samples: HandSample[]): HandTrack | null {
     path,
     extent,
     reversals,
+    // Measured start to end rather than as a total swing: what distinguishes
+    // these signs is which way the palm ends up facing, not how much it wobbled
+    // getting there.
+    palmTurn: end.geometry.palmFacing - start.geometry.palmFacing,
+    pointTurn: end.geometry.pointing - start.geometry.pointing,
     closedness: path > 1e-4 ? Math.max(0, 1 - netLength / path) : 0,
     roundness:
       Math.max(extent.x, extent.y) > 1e-4
