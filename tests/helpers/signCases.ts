@@ -51,7 +51,7 @@ export const SIGN_CASES: Record<string, ObservationSpec> = {
     dominant: { shape: SHAPES.open(), zone: 'head', from: { x: 0.1, y: -0.9 }, path: 0.1, reversals: 2 },
   },
   THINK: {
-    dominant: { shape: SHAPES.index(), zone: 'head', from: { x: 0.2, y: -0.88 }, path: 0.06 },
+    dominant: { shape: SHAPES.index(), zone: 'head', from: { x: 0.29, y: -0.98 }, path: 0.06, at: 'temple' },
   },
   MOTHER: {
     dominant: { shape: SHAPES.open(), zone: 'face', from: { x: 0.1, y: -0.5 }, path: 0.1, reversals: 2 },
@@ -110,7 +110,7 @@ export const SIGN_CASES: Record<string, ObservationSpec> = {
     dominant: { shape: SHAPES.fist(), zone: 'chest', from: { x: 0.35, y: -0.05 }, path: 0.35, reversals: 3, extent: { x: 0.03, y: 0.28 } },
   },
   NO: {
-    dominant: { shape: SHAPES.h(), zone: 'chest', from: { x: 0.35, y: -0.05 }, path: 0.2, reversals: 2 },
+    dominant: { shape: SHAPES.h(), zone: 'chest', from: { x: 0.22, y: -0.05 }, path: 0.2, reversals: 2 },
   },
   WHERE: {
     dominant: { shape: SHAPES.index(), zone: 'neck', from: { x: 0.4, y: -0.2 }, path: 0.4, reversals: 3, extent: { x: 0.28, y: 0.03 } },
@@ -203,8 +203,8 @@ export const SIGN_CASES: Record<string, ObservationSpec> = {
     other: { shape: SHAPES.flat(), zone: 'chest', from: { x: -0.12, y: 0.3 }, to: { x: -0.12, y: 0.0 }, path: 0.5, reversals: 3 },
   },
   TIRED: {
-    dominant: { shape: SHAPES.bent(), zone: 'chest', from: { x: 0.15, y: -0.05 }, to: { x: 0.15, y: 0.35 }, path: 0.42 },
-    other: { shape: SHAPES.bent(), zone: 'chest', from: { x: -0.15, y: -0.05 }, to: { x: -0.15, y: 0.35 }, path: 0.42 },
+    dominant: { shape: SHAPES.bent(), zone: 'chest', from: { x: 0.12, y: 0.18 }, to: { x: 0.12, y: 0.5 }, path: 0.34, at: 'chest' },
+    other: { shape: SHAPES.bent(), zone: 'chest', from: { x: -0.12, y: 0.18 }, to: { x: -0.12, y: 0.5 }, path: 0.34 },
   },
   MEET: {
     dominant: { shape: SHAPES.index(), zone: 'chest', from: { x: 0.42, y: 0.0 }, to: { x: 0.1, y: 0.0 }, path: 0.33 },
@@ -256,7 +256,7 @@ export const SIGN_CASES: Record<string, ObservationSpec> = {
     dominant: { shape: SHAPES.index(), zone: 'face', startZone: 'head', from: { x: 0.16, y: -0.84 }, to: { x: 0.16, y: -0.5 }, path: 0.34, at: 'eye' },
   },
   HEAR: {
-    dominant: { shape: SHAPES.index(), zone: 'head', from: { x: 0.4, y: -0.78 }, path: 0.06, at: 'ear' },
+    dominant: { shape: SHAPES.index(), zone: 'head', from: { x: 0.42, y: -0.76 }, path: 0.06, at: 'ear' },
   },
   FUNNY: {
     dominant: { shape: SHAPES.h(), zone: 'face', from: { x: 0.05, y: -0.68 }, path: 0.16, reversals: 2, at: 'nose' },
@@ -416,8 +416,8 @@ export const SIGN_CASES: Record<string, ObservationSpec> = {
     contacts: 1,
   },
   NOW: {
-    dominant: { shape: SHAPES.bent(), zone: 'waist', from: { x: 0.2, y: 0.4 }, to: { x: 0.2, y: 0.78 }, path: 0.4 },
-    other: { shape: SHAPES.bent(), zone: 'waist', from: { x: -0.2, y: 0.4 }, to: { x: -0.2, y: 0.78 }, path: 0.4 },
+    dominant: { shape: SHAPES.bent(), zone: 'waist', from: { x: 0.32, y: 0.55 }, to: { x: 0.32, y: 0.88 }, path: 0.35 },
+    other: { shape: SHAPES.bent(), zone: 'waist', from: { x: -0.32, y: 0.55 }, to: { x: -0.32, y: 0.88 }, path: 0.35 },
   },
   COLD: {
     dominant: { shape: SHAPES.fist(), zone: 'neck', from: { x: 0.2, y: -0.15 }, path: 0.2, reversals: 3 },

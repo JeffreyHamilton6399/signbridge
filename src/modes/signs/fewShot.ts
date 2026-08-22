@@ -139,11 +139,34 @@ export class FewShotMatcher {
  * here, then triggers on a real departure from it. Hysteresis (a lower bar to
  * stop than to start) stops it flickering at the boundary.
  */
+/**
+ * Fewest quiet frames that can close a sign, however decisively the hand stopped.
+ *
+ * Two frames at 30fps is 67ms. Below that, a single dropped frame or one
+ * unusually clean landmark estimate could end a sign mid-movement.
+ */
+const MIN_QUIET_FRAMES = 2;
+
 export class SignSegmenter {
   private active: Float32Array[] = [];
   private energies: number[] = [];
   private quietFrames = 0;
-  private busyFrames = 0;
+  /**
+   * Frames that have cleared the start threshold but have not yet opened a
+   * window, held rather than counted.
+   *
+   * Two consecutive busy frames are required before a sign starts, so a single
+   * noisy frame cannot open one. This used to be a counter, and when it reached
+   * two the window was seeded with the *current* frame — throwing away the
+   * frame that had triggered it. Every sign lost its first frame.
+   *
+   * That is the frame carrying where the sign began, and 'where it began' is
+   * load-bearing now: GOOD starts at the chin, DEAF at the ear, HELLO at the
+   * temple, and startsAt() reads exactly that sample. Holding the frames costs
+   * two array slots and gives the onset back.
+   */
+  private pending: Float32Array[] = [];
+  private pendingEnergies: number[] = [];
 
   /** EMA of energy while at rest — the noise floor for this person and scene. */
   private baseline = 0;
@@ -164,7 +187,8 @@ export class SignSegmenter {
     this.active = [];
     this.energies = [];
     this.quietFrames = 0;
-    this.busyFrames = 0;
+    this.pending = [];
+    this.pendingEnergies = [];
   }
 
   /** Forget the learned noise floor — after a camera or resolution change. */
@@ -206,20 +230,25 @@ export class SignSegmenter {
       this.learn(energy);
 
       if (!handPresent || !this.calibrated) {
-        this.busyFrames = 0;
+        this.pending = [];
+        this.pendingEnergies = [];
         return null;
       }
       if (energy > this.startThreshold) {
-        this.busyFrames++;
+        this.pending.push(frame);
+        this.pendingEnergies.push(energy);
         // Two consecutive busy frames, so a single noisy frame cannot open a
-        // window.
-        if (this.busyFrames >= 2) {
-          this.active = [frame];
-          this.energies = [energy];
+        // window — and the window opens with both of them, not just the second.
+        if (this.pending.length >= 2) {
+          this.active = this.pending;
+          this.energies = this.pendingEnergies;
+          this.pending = [];
+          this.pendingEnergies = [];
           this.quietFrames = 0;
         }
       } else {
-        this.busyFrames = 0;
+        this.pending = [];
+        this.pendingEnergies = [];
       }
       return null;
     }
@@ -234,12 +263,40 @@ export class SignSegmenter {
     if (energy < this.stopThreshold) this.quietFrames++;
     else this.quietFrames = 0;
 
-    if (this.quietFrames >= this.quietFramesToEnd) return this.finish(this.quietFrames);
+    if (this.quietFrames > 0 && this.quietFrames >= this.requiredQuiet(energy)) {
+      return this.finish(this.quietFrames);
+    }
 
     // Runaway guard: nobody signs one lexical item for four seconds.
     if (this.active.length > 120) return this.finish(0);
 
     return null;
+  }
+
+  /**
+   * How many quiet frames this particular stop needs before the sign is over.
+   *
+   * A fixed count is the wrong shape, for the same reason a fixed dwell was in
+   * fingerspelling. The count exists to survive a *pause inside* a sign — many
+   * signs slow almost to a stop at a direction change — so it has to be
+   * generous. But a hand that has come all the way back to its resting energy
+   * is not pausing mid-sign, it has finished, and making it wait the full count
+   * is dead time at the end of every sign the user sits through.
+   *
+   * So the wait scales with how far through the band between 'only just quiet'
+   * and 'entirely at rest' the energy has fallen. A decisive stop closes in two
+   * frames, an ambiguous one still takes the full five.
+   *
+   * This cannot close a window early on a hand that is merely slowing: the fast
+   * path needs energy near the learned resting baseline, which a mid-sign pause
+   * does not reach.
+   */
+  private requiredQuiet(energy: number): number {
+    const band = this.stopThreshold - this.baseline;
+    if (band <= 1e-9) return this.quietFramesToEnd;
+    const settled = Math.min(1, Math.max(0, (this.stopThreshold - energy) / band));
+    const span = this.quietFramesToEnd - MIN_QUIET_FRAMES;
+    return Math.max(MIN_QUIET_FRAMES, Math.round(this.quietFramesToEnd - span * settled));
   }
 
   private learn(energy: number): void {

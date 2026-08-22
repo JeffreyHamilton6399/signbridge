@@ -93,9 +93,14 @@ export const BODY_ANCHORS: readonly BodyAnchor[] = [
  */
 export const NOMINAL_ANCHORS: Record<BodyAnchor, { x: number; y: number }> = {
   forehead: { x: 0.0, y: -1.02 },
-  temple: { x: 0.32, y: -0.95 },
+  // The temple sits at the side of the brow; the ear is lower and further back.
+  // These were 0.18 apart, which is barely more than the hand's own reach — so
+  // a hand at one was nearly as close to the other, and HEAR (an index finger
+  // at the ear) could only tell itself from THINK by a margin of 0.008.
+  // Anchors closer together than the thing measuring them cannot be told apart.
+  temple: { x: 0.29, y: -0.98 },
   eye: { x: 0.16, y: -0.86 },
-  ear: { x: 0.38, y: -0.78 },
+  ear: { x: 0.42, y: -0.76 },
   nose: { x: 0.0, y: -0.7 },
   mouth: { x: 0.0, y: -0.56 },
   chin: { x: 0.0, y: -0.44 },

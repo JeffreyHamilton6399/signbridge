@@ -24,12 +24,12 @@
  * and five more at 97. The test named every one. Do not add a sign without
  * adding its case.
  *
- * The list is approaching what rules can do. At 97 signs, 55 of them have
- * another sign scoring above 0.5 on their own canonical observation — the space
- * of things 22 handshapes, 12 body anchors and a handful of movement patterns
- * can distinguish is large but not unlimited. Past here, coverage starts being
- * bought with precision, and the honest way to 150 is a trained model. See
- * docs/DATASETS.md.
+ * At 97 signs, 13 of them have another sign scoring above 0.5 on their own
+ * canonical observation, and the tightest margin anywhere is 0.147. The space
+ * that 22 handshapes, 12 body anchors, orientation and a dozen movement
+ * patterns can separate is large but not unlimited; past some point coverage
+ * starts being bought with precision, and the honest way to 150 is a trained
+ * model. See docs/DATASETS.md.
  *
  * Accuracy is well below a trained model's and varies hugely with lighting,
  * framing and signing style. Every match carries its confidence, the rejection
@@ -468,6 +468,9 @@ export const SIGN_TEMPLATES: readonly SignTemplate[] = [
       inZone(o.dominant, 'chest', 'neck'),
       centred(o.dominant),
       held(o.dominant),
+      // At the chest, not merely centred and roughly still — which is also a
+      // description of THIRSTY, an index finger drawn down the throat.
+      at(o.dominant, 'chest'),
     ]),
   ),
 
@@ -476,6 +479,9 @@ export const SIGN_TEMPLATES: readonly SignTemplate[] = [
       yes(!o.twoHanded),
       inZone(o.dominant, 'chest', 'neck'),
       lateral(o.dominant),
+      // A point does not rotate. LATER is an L hand out to the same side that
+      // pivots forward, and an L scores as an index finger here.
+      1 - twists(o.dominant),
     ]),
   ),
 
@@ -655,6 +661,8 @@ export const SIGN_TEMPLATES: readonly SignTemplate[] = [
       inZone(o.dominant, 'head'),
       stillness(o.dominant),
       atAny(o.dominant, 'temple', 'forehead'),
+      // UNDERSTAND is this exact finger in this exact place, flicking upward.
+      1 - movedUp(o.dominant),
       // HEAR is an index finger held at the ear, and the ear sits close enough
       // to the temple that both anchors match a hand between them. Which one is
       // nearer is the question that actually has an answer.
@@ -757,6 +765,9 @@ export const SIGN_TEMPLATES: readonly SignTemplate[] = [
       yes(o.twoHanded),
       inZone(o.dominant, 'chest'),
       movedDown(o.dominant),
+      // On the chest. NOW is the same two bent hands dropping the same way in
+      // neutral space, and without this the two are one sign.
+      startsAt(o.dominant, 'chest'),
     ]),
   ),
 
@@ -1120,6 +1131,9 @@ export const SIGN_TEMPLATES: readonly SignTemplate[] = [
       closerTo(o.dominant?.reached, 'mouth', 'eye'),
       movedDown(o.dominant),
       1 - movedOut(o.dominant),
+      // And it stays on the face. THIRSTY is the same finger leaving the same
+      // place in the same direction and carrying on the length of the throat.
+      endsAt(o.dominant, 'chin', 'mouth'),
     ]),
   ),
 
@@ -1156,6 +1170,11 @@ export const SIGN_TEMPLATES: readonly SignTemplate[] = [
       yes(!o.twoHanded),
       at(o.dominant, 'shoulder'),
       closerTo(o.dominant?.reached, 'shoulder', 'chest'),
+      // NO is the same H hand moving about at neck height, which sits near
+      // enough to the shoulder to satisfy "at the shoulder" outright — the two
+      // scored identically, and which one won was down to array order. Being
+      // nearer the shoulder than the neck is true of only one of them.
+      closerTo(o.dominant?.reached, 'shoulder', 'neck'),
       travelled(o.dominant, 0.15),
     ]),
   ),
@@ -1258,6 +1277,8 @@ export const SIGN_TEMPLATES: readonly SignTemplate[] = [
       bothMoved(o, 'down'),
       inZone(o.dominant, 'chest', 'waist'),
       1 - repeated(o.dominant, 2),
+      // Out in front of you, not against the body — see TIRED.
+      1 - startsAt(o.dominant, 'chest'),
     ]),
   ),
 
