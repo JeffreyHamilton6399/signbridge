@@ -986,3 +986,95 @@ describe('body anchors', () => {
     expect(track.reached.chin).toBeLessThan(0.16);
   });
 });
+
+/**
+ * When a sign is over.
+ *
+ * Two changes here, one for latency and one for correctness.
+ *
+ * **The window used to lose its own first frame.** Two consecutive busy frames
+ * are required before a sign opens, so a single noisy frame cannot start one —
+ * but the window was then seeded with the *second* of them and the first was
+ * discarded. That frame carries where the sign began, and "where it began" is
+ * load-bearing: GOOD starts at the chin, DEAF at the ear, HELLO at the temple,
+ * and `startsAt` reads exactly that sample.
+ *
+ * **The wait after the hand stops used to be fixed.** Five quiet frames is
+ * 167ms at 30fps, paid at the end of every sign. The count is generous because
+ * it has to survive a pause *inside* a sign — many slow almost to a stop at a
+ * direction change — but a hand that has come all the way back to its resting
+ * energy has finished, and making it wait the full count is dead time.
+ */
+describe('segment boundaries', () => {
+  const frame = (mark = 0) => new Float32Array([mark]);
+  const QUIET = 0.002;
+
+  function calibrated(): SignSegmenter {
+    const segmenter = new SignSegmenter();
+    for (let i = 0; i < 40; i++) segmenter.push(frame(), QUIET + Math.sin(i) * 0.0002);
+    return segmenter;
+  }
+
+  /** Quiet frames needed to close, after a burst of movement. */
+  function framesToClose(restEnergy: number): number {
+    const segmenter = calibrated();
+    for (let i = 0; i < 20; i++) segmenter.push(frame(), 0.06);
+    for (let i = 0; i < 25; i++) if (segmenter.push(frame(), restEnergy)) return i + 1;
+    return -1;
+  }
+
+  it('keeps the frame that started the sign', () => {
+    // Frames are marked with their index. If the onset is being dropped the
+    // window begins at 1.
+    const segmenter = calibrated();
+    for (let i = 0; i < 12; i++) segmenter.push(frame(i), 0.06);
+    let window: Float32Array[] | null = null;
+    for (let i = 0; i < 12 && !window; i++) window = segmenter.push(frame(99), 0);
+    expect(window).not.toBeNull();
+    expect(window![0][0]).toBe(0);
+  });
+
+  it('closes quickly when the hand has plainly stopped', () => {
+    // Two frames, 66ms, against the 167ms it always used to take.
+    expect(framesToClose(0)).toBe(2);
+  });
+
+  it('still waits the full count when the stop is ambiguous', () => {
+    // This is the safety half. Energy only just under the stop threshold is
+    // exactly what a mid-sign pause looks like, and it gets the original wait.
+    const segmenter = calibrated();
+    for (let i = 0; i < 20; i++) segmenter.push(frame(), 0.06);
+    const barelyQuiet = segmenter.stopThreshold * 0.999;
+    let closedAt = -1;
+    for (let i = 0; i < 25; i++) if (segmenter.push(frame(), barelyQuiet)) { closedAt = i + 1; break; }
+    expect(closedAt).toBe(5);
+  });
+
+  it('closes sooner the more decisively the hand stopped', () => {
+    const decisive = framesToClose(0);
+    const middling = framesToClose(0.005);
+    expect(decisive).toBeLessThan(middling);
+    expect(decisive).toBeGreaterThanOrEqual(2);
+  });
+
+  it('does not end a sign on a pause in the middle of one', () => {
+    // The hand slows at a direction change without coming to rest, then carries
+    // on. Ending here would cut the sign in half and recognise neither piece.
+    const segmenter = calibrated();
+    for (let i = 0; i < 10; i++) expect(segmenter.push(frame(), 0.06)).toBeNull();
+    const pause = segmenter.stopThreshold * 0.95;
+    for (let i = 0; i < 3; i++) expect(segmenter.push(frame(), pause)).toBeNull();
+    for (let i = 0; i < 10; i++) expect(segmenter.push(frame(), 0.06)).toBeNull();
+    expect(segmenter.recording).toBe(true);
+  });
+
+  it('still needs two busy frames to start, so one noisy frame cannot', () => {
+    const segmenter = calibrated();
+    expect(segmenter.push(frame(), 0.06)).toBeNull();
+    expect(segmenter.recording).toBe(false);
+    // A quiet frame in between clears the pair.
+    segmenter.push(frame(), QUIET);
+    expect(segmenter.push(frame(), 0.06)).toBeNull();
+    expect(segmenter.recording).toBe(false);
+  });
+});

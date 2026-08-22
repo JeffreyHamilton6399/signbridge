@@ -1381,3 +1381,60 @@ Round-robin now: every position gets its first alternative before any position
 gets its second. Same cost, and since alternatives are ordered likeliest-first,
 the budget goes to the likeliest error *anywhere* in the word instead of every
 error in its opening.
+
+## Signs: the window lost its own onset, and waited too long to close
+
+### Measure first
+
+Before changing anything, the per-frame cost, on this machine:
+
+| | p50 | p95 |
+|---|---|---|
+| `sampleFrame` (2 hands, 12 anchors) | 0.031ms | 0.068ms |
+| `recognizeSign` (97 templates) | 0.161ms | 0.261ms |
+| `observe` (40-frame window) | 0.046ms | 0.102ms |
+| fingerspell `predict` | 0.046ms | 0.081ms |
+
+Against a 33ms frame. **Compute is not the bottleneck and tripling the sign
+vocabulary cost nothing measurable** — `recognizeSign` runs once per completed
+sign, not per frame. So "make signs faster" is a latency question, and the
+latency is in the segmenter.
+
+### The window was throwing away the frame that started the sign
+
+Two consecutive busy frames are required before a sign opens, so a single noisy
+frame cannot start one. The window was then seeded with the *second* of them and
+the first was discarded — every sign lost its onset.
+
+That frame carries where the sign began, and "where it began" became
+load-bearing when body anchors landed: GOOD starts at the chin, DEAF at the ear,
+HELLO at the temple, and `startsAt` reads exactly that sample. The counter is now
+a two-frame buffer, so the window opens containing both.
+
+### The wait after the hand stops is now proportional to how decisively it stopped
+
+Five quiet frames is 167ms, paid at the end of every sign. The count is generous
+because it has to survive a pause *inside* a sign — many slow almost to a stop
+at a direction change — but a hand that has returned to its resting energy has
+finished, and the rest of the wait is dead time.
+
+`requiredQuiet` scales the count with how far through the band between "only
+just quiet" and "entirely at rest" the energy has fallen:
+
+| energy at rest | frames | |
+|---|---|---|
+| fully at rest | 2 | 66ms |
+| half-way down the band | 3–4 | 99–132ms |
+| just under the stop threshold | 5 | 165ms |
+
+So a clean stop saves 100ms off the end of every sign, and an ambiguous one —
+which is exactly what a mid-sign pause looks like — still gets the original
+wait. A test pins both ends, and another pins that a slowdown which never
+reaches rest does not close the window at all.
+
+The floor is two frames. Below that a single dropped frame could end a sign
+mid-movement.
+
+**Honest limit:** a hand that comes to *full* rest for 67ms in the middle of a
+sign will now end it early. That is unusual — a pause at a direction change does
+not reach resting energy — but it is a real behaviour change, not a free win.
