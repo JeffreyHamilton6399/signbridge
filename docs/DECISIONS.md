@@ -1188,3 +1188,94 @@ signs at 45% is a demo that wastes people's time."* 150 was always specified as
 the target for a **trained model**, and that is still the honest route to it.
 The rules are what makes the app work on day one with no dataset; they are not
 what gets it to 150.
+
+## Letters: one clause that fails should be fatal, and dwell should scale
+
+### The letter templates had never had a separability test
+
+The sign vocabulary got one and it found nine collisions. The 24 letter
+templates are the same kind of code and had never had one: the fist cluster was
+checked, because that is where the complaints came from, and the other eighteen
+letters were on trust.
+
+`tests/helpers/letterCases.ts` now holds a canonical hand per letter, and the
+suite asserts each wins its own, scores above 0.8 on itself, and lists whatever
+else fires on it.
+
+### `geomean` was making decisive failures irrelevant
+
+The header claimed a geometric mean meant "one confidently-failed predicate is
+enough to rule a letter out". With eight clauses that is arithmetically false: a
+clause failing at 0.2 among seven satisfied ones comes out at 0.2^(1/8) = 0.82 —
+over the default commit threshold. The app would write the wrong letter with no
+hesitation at all.
+
+Measured, on a canonical hand for every letter:
+
+| | scored on | before | after |
+|---|---|---|---|
+| Q | a G | 0.92 | 0.02 |
+| K | a V | 0.82 | 0.51 |
+| A | an X | 0.80 | 0.53 |
+| R | a U | 0.74 | 0.40 |
+
+Every one of those pairs differs by *exactly one predicate* — orientation, the
+thumb, one half-curled finger, whether two fingers cross — and the single
+deciding predicate was being averaged into nothing.
+
+`combine` gives the weakest clause a third of the weight on its own and the mean
+the rest. Not a plain minimum: landmarks are noisy, a real letter always has one
+clause a little short, and scoring by the worst frame would refuse to recognise
+anything. A third is decisive without being brittle. Near-miss pairs across the
+alphabet went from 40 to 8, and the eight are the fist cluster.
+
+P and Q also had orientation bands so soft they were decorative — `below(pointing,
+-0.15, 0.45)` gives a sideways G a 0.56 on Q, and pointing down is the entire
+content of both letters.
+
+### A relaxed hand was a C at 0.97
+
+`half()` peaks at exactly 0.5 extension, which is precisely what a hand at rest
+reports, so every letter built on "half-curled fingers" loves a resting hand. C
+asked only that the thumb be above 0.25 extension; a relaxed thumb reads 0.5.
+
+This is the same bug the signs mode had — a relaxed hand near the face reading
+as DRINK at 90% — and `features/handshapes.ts` had already fixed it there and
+written down why. The letter had not been told. A relaxed hand now tops out at
+0.44, under the commit threshold, and a test pins it.
+
+### Dwell now scales with the evidence
+
+A fixed dwell is the wrong shape for what a dwell does. It exists so the
+classifier's frame-to-frame flicker can average out — but a letter arriving at
+0.97 with nothing else above 0.01 has no flicker to average. The evidence
+arrived complete, and the rest of the wait is dead time paid on every letter of
+every word.
+
+At the 600ms default, fed a steady distribution at 30fps:
+
+| | scale | commits in |
+|---|---|---|
+| clean B, runner-up 0.01 | 0.49 | 297ms |
+| good L, runner-up 0.05 | 0.78 | 495ms |
+| ok W, runner-up 0.10 | 1.03 | 627ms |
+| tight T vs N, runner-up 0.22 | 1.34 | 825ms |
+
+Typical letters roughly halve; genuinely close ones get *slower*, which is the
+right answer for the case that actually goes wrong.
+
+Three constraints on it, all tested:
+
+- **It never lowers the confidence threshold.** A letter still has to clear the
+  user's bar to accumulate any dwell at all. Speed comes from letters that were
+  never in doubt, not from accepting worse evidence.
+- **High confidence in a near-tie gets no discount.** That combination is the
+  fist cluster exactly, and hurrying there is how it goes wrong, so the weaker of
+  confidence and margin governs.
+- **A caller with no distribution is unchanged.** Unknown margin means the
+  configured dwell, not "assume the worst" — reading it the other way silently
+  made every label-only caller half a second slower, which the existing tests
+  caught immediately.
+
+The settings hint now says the dial is the middle of a range rather than a fixed
+wait, because it is.

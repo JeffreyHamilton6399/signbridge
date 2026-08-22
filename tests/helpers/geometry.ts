@@ -44,6 +44,17 @@ export interface GeometrySpec {
   knuckleBend?: [number, number, number];
   /** Fingertip clearance off the palm plane. Default: tips against the palm. */
   tipLift?: number;
+  /**
+   * PIP angle of the index finger, overriding the default derived from its
+   * extension.
+   *
+   * The default is a crude linear stand-in, and it is wrong for a hooked finger:
+   * an X bends sharply at the PIP while staying half-extended overall, so the
+   * two do not track each other. Without this the canonical X scored 0.64 on
+   * itself, which was the helper disagreeing with the template rather than the
+   * template being wrong.
+   */
+  indexPipAngle?: number;
 }
 
 /** A relaxed, half-open hand — nothing in particular. */
@@ -51,7 +62,7 @@ export function geometry(spec: GeometrySpec = {}): HandGeometry {
   const ext = spec.ext ?? [0.5, 0.5, 0.5, 0.5, 0.5];
   const fingers = {
     thumb: finger(ext[0]),
-    index: finger(ext[1]),
+    index: { ...finger(ext[1]), pipAngle: spec.indexPipAngle ?? finger(ext[1]).pipAngle },
     middle: finger(ext[2]),
     ring: finger(ext[3]),
     pinky: finger(ext[4]),

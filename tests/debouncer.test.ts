@@ -3,7 +3,13 @@
  * behaviour under flicker, frame drops and repeated letters is pinned here.
  */
 import { describe, expect, it } from 'vitest';
-import { DwellCommitter } from '@/modes/fingerspell/debouncer';
+import {
+  DEFAULT_DWELL,
+  DwellCommitter,
+  MAX_SCALE,
+  MIN_SCALE,
+  dwellScale,
+} from '@/modes/fingerspell/debouncer';
 import type { DwellEvent } from '@/modes/fingerspell/debouncer';
 
 const CONFIG = {
@@ -248,5 +254,109 @@ describe('DwellCommitter with distributions', () => {
     expect(commits.length).toBeGreaterThan(0);
     const first = commits[0];
     if (first.type === 'commit') expect(first.label).toBe('K');
+  });
+});
+
+/**
+ * Adaptive dwell.
+ *
+ * A fixed dwell is the wrong shape for what the dwell is doing. It exists to
+ * let the classifier's frame-to-frame flicker average out — but when a letter
+ * arrives at 0.97 with nothing else above 0.01, there is no flicker to average.
+ * The evidence arrived complete, and the remaining wait is dead time the user
+ * pays on every letter of every word.
+ *
+ * Measured against the 600ms default, feeding a steady distribution at 30fps:
+ *
+ *   clean B    0.97, runner-up 0.01   ->  297ms
+ *   good L     0.88, runner-up 0.05   ->  495ms
+ *   ok W       0.80, runner-up 0.10   ->  627ms
+ *   tight T/N  0.70, runner-up 0.22   ->  825ms
+ *
+ * The letters that were never in doubt get roughly twice as fast; the ones that
+ * are genuinely close get *slower*, which is the right answer for the case that
+ * actually goes wrong.
+ */
+describe('adaptive dwell', () => {
+  const THRESHOLD = DEFAULT_DWELL.confidenceThreshold;
+
+  /** Feed one steady distribution until it commits; returns ms, or -1. */
+  function timeToCommit(distribution: Record<string, number>, config = {}): number {
+    const committer = new DwellCommitter(config);
+    const [label, confidence] = Object.entries(distribution).sort((a, b) => b[1] - a[1])[0];
+    for (let i = 0; i < 300; i++) {
+      const t = i * 33;
+      const event = committer.feed({ label, confidence, distribution, handY: 0.5, t });
+      if (event.type === 'commit') return t;
+    }
+    return -1;
+  }
+
+  it('commits an unambiguous letter in well under the nominal dwell', () => {
+    const ms = timeToCommit({ B: 0.97, D: 0.01, F: 0.01, U: 0.01 });
+    expect(ms).toBeGreaterThan(0);
+    expect(ms).toBeLessThan(DEFAULT_DWELL.dwellMs * 0.6);
+  });
+
+  it('takes longer than the nominal dwell when the runner-up is close', () => {
+    const ms = timeToCommit({ T: 0.7, N: 0.22, M: 0.05, A: 0.03 });
+    expect(ms).toBeGreaterThan(DEFAULT_DWELL.dwellMs);
+  });
+
+  it('never goes below the floor, however certain it is', () => {
+    // A hand passing through a pose on its way somewhere else can be briefly,
+    // genuinely unambiguous. Committing on that turns transitions into letters.
+    const ms = timeToCommit({ B: 1 });
+    expect(ms).toBeGreaterThanOrEqual(DEFAULT_DWELL.dwellMs * MIN_SCALE - 33);
+  });
+
+  it('still respects the confidence threshold', () => {
+    // Speed is bought from letters that were never in doubt, never by accepting
+    // worse evidence. A near-tie below the bar commits at no speed at all.
+    expect(timeToCommit({ T: 0.35, A: 0.33, N: 0.16, M: 0.16 })).toBe(-1);
+  });
+
+  it('leaves a caller with no distribution exactly as it was', () => {
+    // Unknown margin has to mean the configured dwell, not "assume the worst" —
+    // otherwise every label-only caller silently gets slower.
+    expect(dwellScale(0.99, null, THRESHOLD)).toBe(1);
+  });
+
+  it('scales monotonically with the evidence', () => {
+    const weak = dwellScale(0.68, 0.02, THRESHOLD);
+    const middling = dwellScale(0.82, 0.2, THRESHOLD);
+    const strong = dwellScale(0.97, 0.9, THRESHOLD);
+    expect(weak).toBeGreaterThan(middling);
+    expect(middling).toBeGreaterThan(strong);
+    // Bounded, not saturated: only a perfect 1.0 confidence reaches the floor,
+    // and real letters never quite do.
+    expect(strong).toBeGreaterThanOrEqual(MIN_SCALE);
+    expect(strong).toBeLessThan(0.55);
+    expect(weak).toBeLessThanOrEqual(MAX_SCALE);
+    expect(weak).toBeGreaterThan(1.4);
+    expect(dwellScale(1, 1, THRESHOLD)).toBeCloseTo(MIN_SCALE, 5);
+  });
+
+  it('does not discount a confident letter that is in a near-tie', () => {
+    // High confidence with a close runner-up is the fist cluster exactly, and
+    // hurrying there is how it gets things wrong. The weaker signal governs.
+    expect(dwellScale(0.95, 0.01, THRESHOLD)).toBeGreaterThan(1.4);
+  });
+
+  it('reports progress against the real requirement, not the nominal one', () => {
+    // The commit animation is the app's most-repeated moment; it has to track
+    // what is actually about to happen.
+    const committer = new DwellCommitter();
+    const distribution = { B: 0.97, D: 0.01, F: 0.01, U: 0.01 };
+    let last = 0;
+    for (let i = 0; i < 6; i++) {
+      const event = committer.feed({
+        label: 'B', confidence: 0.97, distribution, handY: 0.5, t: i * 33,
+      });
+      if (event.type === 'tracking') last = event.progress;
+    }
+    // Five frames is 165ms — over half of the ~290ms this letter actually needs,
+    // and well under half of the nominal 600ms.
+    expect(last).toBeGreaterThan(0.5);
   });
 });

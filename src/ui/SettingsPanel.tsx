@@ -158,7 +158,7 @@ export function SettingsPanel({
         <div className="px-5">
           <Section
             title="Recognition"
-            summary={`${settings.recognition.dwellMs} ms dwell · commits at ${Math.round(settings.recognition.confidenceThreshold * 100)}%`}
+            summary={`~${settings.recognition.dwellMs} ms dwell · commits at ${Math.round(settings.recognition.confidenceThreshold * 100)}%`}
             {...section('recognition')}
           >
             <Choice<DominantHand>
@@ -173,7 +173,7 @@ export function SettingsPanel({
             />
             <Slider
               label="Dwell time to commit"
-              hint="How long a letter must be held steady before it is written. The most useful dial here: longer means fewer wrong letters and slower spelling."
+              hint="How long a letter must be held steady before it is written. This is the middle of a range, not a fixed wait: a letter with nothing else close to it commits in about half this, and one in a near-tie takes about half again as long. The most useful dial here."
               value={settings.recognition.dwellMs}
               {...RANGES.dwellMs}
               format={(v) => `${v} ms`}
