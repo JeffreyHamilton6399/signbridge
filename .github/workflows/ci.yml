@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Feature branches do not open a PR here as a matter of course, and a workflow
+  # that only runs on main tells you about a break after it has landed. This
+  # makes a run something you can ask for on any branch.
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
