@@ -1177,10 +1177,14 @@ FINE is *still open when it arrives*, YES is *vertical*, AGAIN comes *inward*.
 
 ### Where the ceiling is
 
-At 97 signs, **55 of them have another sign scoring above 0.5 on their own
-canonical observation**. At 29 it was a handful. The space that 22 handshapes,
-12 anchors, orientation and a dozen movement patterns can separate is large, but
-it is not unlimited, and the near-miss rate is the measurement of how full it is.
+At 97 signs, **13 of them have another sign scoring above 0.5 on their own
+canonical observation**, and the tightest margin anywhere is 0.147.
+
+An earlier version of this section said 55, which was wrong: that number counted
+entries in CONFUSABLE — which includes the symmetric closure and everything
+inherited from before the measurement existed — not signs with a live
+near-miss. The real collision pressure is a quarter of what was claimed, so
+there is more headroom here than that paragraph suggested.
 
 Going on to 150 this way would buy coverage with precision — which is the trade
 `vocabulary.ts` was written to refuse: *"150 signs at 85% is a product, 2000
@@ -1438,3 +1442,56 @@ mid-movement.
 **Honest limit:** a hand that comes to *full* rest for 67ms in the middle of a
 sign will now end it early. That is unusual — a pause at a direction change does
 not reach resting energy — but it is a real behaviour change, not a free win.
+
+## The separability test was passing on coin tosses
+
+Requiring a sign to *win* its own canonical observation is not enough, because
+`Array.sort` is stable: on an exact tie the template that happens to sit earlier
+in the file comes out first, and the test goes green.
+
+Three pairs were doing exactly that, at a dead heat of 1.00 — **NO with
+HOSPITAL, TIRED with NOW, THIRSTY with RED**. Every one looked fine and every one
+was a coin toss that would land differently on a real hand.
+
+That is the worse kind of hole: a test reporting success for the precise thing
+it was written to catch. It now requires a margin of 0.1, which is the assertion
+that was meant all along.
+
+What the stronger test then found, in order of how it was fixed:
+
+- **NO was placed on the shoulder.** Its canonical hand sat close enough to the
+  shoulder anchor to score a perfect HOSPITAL. NO is made in front of the body;
+  the case was wrong, and HOSPITAL now also has to be nearer the shoulder than
+  the neck.
+- **TIRED was not on the chest.** It is made with the fingertips against the
+  chest, and its case had them out at neck height — which is NOW, two bent hands
+  dropping in neutral space. Both templates now say which.
+- **RED did not stop at the face.** THIRSTY is the same finger leaving the same
+  place in the same direction and carrying on down the throat.
+- **ME was "centred and roughly still"**, which also describes THIRSTY. It now
+  has to be at the chest.
+- **YOU did not mind rotating.** LATER is an L hand out to the same side that
+  pivots forward, and an L scores as an index finger to the handshape
+  predicates. A point does not rotate.
+- **THINK did not mind moving up.** UNDERSTAND is that exact finger in that
+  exact place, flicking upward.
+
+### Anchors closer together than the thing measuring them
+
+HEAR — an index finger at the ear — could only tell itself from THINK by 0.008.
+The temple and ear anchors were 0.18 apart, barely more than the hand's own
+reach, so a hand at one was very nearly as close to the other.
+
+`closerTo` cannot rescue that; no comparison can, when the blur is wider than
+the gap. The two anchors are now placed where they actually are on a head — the
+temple at the side of the brow, the ear lower and further back, 0.26 apart.
+
+Every sign now wins its own observation by at least **0.147**, and no pair is
+tied.
+
+### A number in the previous entry was wrong
+
+It claimed 55 of 97 signs had a near-miss above 0.5. That counted entries in
+CONFUSABLE — symmetric closure included, plus everything inherited from before
+the measurement existed — not signs with a live near-miss. The real figure is
+**13**. Corrected in place; the ceiling is further off than that paragraph said.

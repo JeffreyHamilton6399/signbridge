@@ -770,6 +770,28 @@ describe('every built-in sign', () => {
     expect(scored[0].gloss).toBe(gloss);
   });
 
+  /**
+   * Winning is not enough — it has to win by something.
+   *
+   * The test above passes on an exact tie, because Array.sort is stable and the
+   * template that happens to sit earlier in the file comes out first. Three
+   * pairs were doing exactly that at a dead heat of 1.00: NO with HOSPITAL,
+   * TIRED with NOW, THIRSTY with RED. Each looked green and each was a coin
+   * toss that would land differently on a real hand.
+   *
+   * That is a hole in the safety net rather than in the templates, and the
+   * worse kind: a test that reports success for something it was written to
+   * catch.
+   */
+  it.each(BUILT_IN_GLOSSES.map((g) => [g]))('%s wins by a real margin', (gloss) => {
+    const observation = caseFor(gloss);
+    const own = SIGN_TEMPLATES.find((t) => t.gloss === gloss)!.score(observation);
+    const rival = SIGN_TEMPLATES.filter((t) => t.gloss !== gloss)
+      .map((t) => t.score(observation))
+      .reduce((most, s) => Math.max(most, s), 0);
+    expect(own - rival).toBeGreaterThan(0.1);
+  });
+
   it.each(BUILT_IN_GLOSSES.map((g) => [g]))('%s is what gets offered, and clears the floor', (gloss) => {
     const candidates = recognizeSign(caseFor(gloss));
     expect(candidates.length).toBeGreaterThan(0);
