@@ -7,6 +7,8 @@ import { migrateSettings } from '@/settings/migrate';
 import { DEFAULT_SETTINGS } from '@/settings/defaults';
 import { SETTINGS_VERSION, clampToRange } from '@/settings/schema';
 import { Autocomplete, confusionVariants } from '@/modes/fingerspell/autocomplete';
+import { LETTER_CONFUSIONS } from '@/modes/fingerspell/wordlist';
+import { CONFUSION_CLUSTERS } from '@/modes/fingerspell/letterTemplates';
 import { PER_FRAME_DIM, WINDOW_FRAMES, motionEnergy, resampleWindow } from '@/features/window';
 import { FewShotMatcher, SignSegmenter, buildPrototype } from '@/modes/signs/fewShot';
 import { greedyDecode } from '@/modes/conversation/ctc';
@@ -50,6 +52,15 @@ describe('settings migration', () => {
     expect(migrated.recognition.confidenceThreshold).toBe(
       DEFAULT_SETTINGS.recognition.confidenceThreshold,
     );
+  });
+
+  it('gives an existing install landmark smoothing rather than leaving it off', () => {
+    // Anyone upgrading had no filtering at all, and no filtering is the worse
+    // experience — the setting exists so people can ask for raw tracking, not
+    // so they get it by accident.
+    const migrated = migrateSettings({ version: 3, recognition: { dwellMs: 800 } });
+    expect(migrated.recognition.landmarkSmoothing).toBe('standard');
+    expect(migrated.recognition.dwellMs).toBe(800);
   });
 
   it('never lets a stored blob turn off on-device-only', () => {
@@ -300,5 +311,64 @@ describe('transcript export', () => {
     const srt = toSrt(tokens, 0, 1000);
     expect(srt).toContain('00:00:00,000 --> 00:00:01,000');
     expect(srt).toContain('00:00:01,000 --> 00:00:02,000');
+  });
+});
+
+/**
+ * The completion layer against the confusions the recogniser actually makes.
+ *
+ * "Fingerspelling recognition is error-prone; a good autocomplete layer covers
+ * a lot of model weakness" — and it only covers the weakness it knows about.
+ * LETTER_CONFUSIONS used to be a hand-maintained copy of CONFUSION_CLUSTERS,
+ * carrying the instruction "keep this in sync", and it had drifted: the
+ * classifier's measured confusions put A with E, M, N, O, S, T and X, while
+ * this list had A with S and T. Every missing pair is an error the recogniser
+ * makes and the completion layer could not recover.
+ */
+describe('completion covers the real confusions', () => {
+  it('knows every confusion the classifier does', () => {
+    for (const [letter, others] of Object.entries(CONFUSION_CLUSTERS)) {
+      const known = LETTER_CONFUSIONS[letter.toLowerCase()] ?? [];
+      for (const other of others) {
+        expect(known).toContain(other.toLowerCase());
+      }
+    }
+  });
+
+  it('spreads its variant budget across the whole word, not just the start', () => {
+    // A misread near the end of a word is exactly as likely as one at the
+    // start. Position-major search spent the entire budget on the first few
+    // letters of a long prefix and never looked at the rest.
+    const prefix = 'astronaut';
+    const variants = confusionVariants(prefix);
+    const changedAt = new Set(
+      variants.map((v) => {
+        for (let i = 0; i < prefix.length; i++) if (v[i] !== prefix[i]) return i;
+        return -1;
+      }),
+    );
+    // Every letter with a confusion cluster gets looked at.
+    const positionsWithClusters = [...prefix].filter((c) => LETTER_CONFUSIONS[c]?.length).length;
+    expect(changedAt.size).toBe(positionsWithClusters);
+    // Including one in the back half.
+    expect([...changedAt].some((i) => i >= prefix.length / 2)).toBe(true);
+  });
+
+  it('still respects the cap', () => {
+    expect(confusionVariants('mnstermnster').length).toBeLessThanOrEqual(24);
+  });
+
+  it('only ever substitutes one letter', () => {
+    const prefix = 'stem';
+    for (const variant of confusionVariants(prefix)) {
+      const differences = [...prefix].filter((c, i) => variant[i] !== c).length;
+      expect(differences).toBe(1);
+      expect(variant).toHaveLength(prefix.length);
+    }
+  });
+
+  it('recovers a word misread in its final letter', () => {
+    // "hous" with the S read as an A — a real fist-cluster confusion.
+    expect(new Autocomplete().suggest('houa').map((s) => s.word)).toContain('house');
   });
 });

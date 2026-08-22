@@ -40,7 +40,15 @@ function syntheticHand(seed: number): HandFrame {
     y: 0.6 + (y + wobble) * 0.1,
     z: wobble * 0.1,
   }));
-  return { landmarks, handedness: 'Right', handednessScore: 0.98 };
+  // World landmarks are present on every real frame, and reading them costs an
+  // extra normalization pass, so the benchmark has to carry them or it is
+  // measuring a path the app no longer takes.
+  const world: Point3[] = landmarks.map((p) => ({
+    x: (p.x - 0.5) * 1.8,
+    y: (p.y - 0.6) * 1.8,
+    z: p.z * 1.8,
+  }));
+  return { landmarks, world, handedness: 'Right', handednessScore: 0.98 };
 }
 
 function percentile(samples: number[], p: number): number {

@@ -10,6 +10,8 @@ import { describe, expect, it } from 'vitest';
 import { bestHandshape, handshape } from '@/features/handshapes';
 import type { HandshapeName } from '@/features/handshapes';
 import { observe, sampleFrame, zoneOf } from '@/modes/signs/observation';
+import { HAND_LANDMARK } from '@/vision/types';
+import type { HandFrame, Point3 } from '@/vision/types';
 import type { SignFrame } from '@/modes/signs/observation';
 import {
   BUILT_IN_GLOSSES,
@@ -19,11 +21,12 @@ import {
   recognizeSign,
   signHint,
 } from '@/modes/signs/signTemplates';
+import { SIGN_CASES, caseFor, IDLE } from './helpers/signCases';
 import { SignSegmenter } from '@/modes/signs/fewShot';
 import { DEFAULT_SETTINGS } from '@/settings/defaults';
 import { CONFUSION_CLUSTERS, LETTER_TEMPLATES } from '@/modes/fingerspell/letterTemplates';
 import { PER_FRAME_DIM } from '@/features/window';
-import { SHAPES, geometry, observation } from './helpers/geometry';
+import { SHAPES, geometry, observation, sample } from './helpers/geometry';
 
 describe('handshape predicates', () => {
   const names = Object.keys(SHAPES) as HandshapeName[];
@@ -70,22 +73,34 @@ describe('handshape predicates', () => {
 
 /** Handshapes that genuinely overlap and are not expected to outrank each other. */
 const OVERLAPS: Partial<Record<HandshapeName, HandshapeName[]>> = {
-  flat: ['bent', 'open'],
-  bent: ['flat', 'claw', 'flatO', 'c'],
-  claw: ['bent', 'open', 'flatO', 'c'],
-  open: ['flat', 'claw'],
-  h: ['v', 'index'],
-  v: ['h'],
-  w: ['open', 'v', 'h'],
-  index: ['h'],
-  fist: ['thumbUp', 'y'],
-  thumbUp: ['fist', 'y'],
-  y: ['thumbUp', 'fist', 'ily'],
   ily: ['y'],
-  flatO: ['c', 'bent', 'claw'],
   // A C hand and a bent-B hand are both "half-curled fingers" to a landmark
   // model. The thumb tells them apart in real life and MediaPipe rarely sees it.
   c: ['flatO', 'claw', 'bent'],
+  // The second wave of handshapes. Each is an existing one plus a thumb, or an
+  // existing one with a finger half-way — which is exactly the kind of
+  // difference an occluded thumb and a noisy landmark cannot be trusted on.
+  // Naming the overlap is the honest move; pretending these separate cleanly
+  // is how the fist cluster went wrong in letterTemplates.ts.
+  l: ['index', 'thumbUp', 'y'],
+  index: ['h', 'l', 'x', 'babyO'],
+  thumbUp: ['fist', 'y', 'l'],
+  babyO: ['flatO', 'fist', 'x', 'index'],
+  x: ['fist', 'index', 'babyO', 'bent', 'bentV'],
+  three: ['v', 'w', 'h', 'l'],
+  v: ['h', 'three', 'bentV'],
+  w: ['open', 'v', 'h', 'three'],
+  h: ['v', 'index', 'three', 'r'],
+  r: ['h', 'v', 'index'],
+  four: ['open', 'flat', 'w'],
+  open: ['flat', 'claw', 'four', 'w'],
+  flat: ['bent', 'open', 'four'],
+  bentV: ['claw', 'v', 'x', 'bent'],
+  bent: ['flat', 'claw', 'flatO', 'c', 'x', 'bentV'],
+  claw: ['bent', 'open', 'flatO', 'c', 'bentV'],
+  flatO: ['c', 'bent', 'claw', 'babyO'],
+  fist: ['thumbUp', 'y', 'x', 'babyO'],
+  y: ['thumbUp', 'fist', 'ily', 'l'],
 };
 
 describe('zones', () => {
@@ -106,7 +121,7 @@ describe('zones', () => {
 describe('observation', () => {
   const frame = (x: number, y: number, t: number): SignFrame => ({
     t,
-    dominant: { geometry: SHAPES.flat(), pos: { x, y, z: 0 }, zone: 'chest' },
+    dominant: sample(SHAPES.flat(), { x, y }, 'chest'),
     other: null,
     handGap: null,
     bodyUnknown: false,
@@ -159,8 +174,8 @@ describe('observation', () => {
     const gaps = [1.2, 0.2, 1.2, 0.2, 1.2];
     const frames: SignFrame[] = gaps.map((gap, i) => ({
       t: i * 33,
-      dominant: { geometry: SHAPES.flat(), pos: { x: 0, y: 0, z: 0 }, zone: 'chest' },
-      other: { geometry: SHAPES.flat(), pos: { x: gap, y: 0, z: 0 }, zone: 'chest' },
+      dominant: sample(SHAPES.flat(), { x: 0, y: 0 }, 'chest'),
+      other: sample(SHAPES.flat(), { x: gap, y: 0 }, 'chest'),
       handGap: gap,
       bodyUnknown: false,
     }));
@@ -524,9 +539,35 @@ describe('segmentation', () => {
 });
 
 describe('the fist cluster', () => {
-  /** A closed fist with the thumb somewhere along the knuckle line. */
-  const fist = (thumbAcross: number, thumbExtension = 0.2) =>
-    geometry({ ext: [thumbExtension, 0.05, 0.05, 0.05, 0.05], thumbAcross });
+  /**
+   * A fist letter, described the way the camera actually sees one: where the
+   * fingers are, plus whatever MediaPipe claims about the thumb.
+   *
+   * `drape` is how many fingers lie over the thumb and `lift` is how far their
+   * tips are held off the palm — both read from fingers in plain view. The
+   * thumb arguments are the part that may be invention.
+   */
+  const fistOf = (opts: {
+    drape: 0 | 1 | 2 | 3;
+    lift: number;
+    thumbAcross: number;
+    thumbExtension?: number;
+    thumbAlong?: number;
+  }) => {
+    const bend: [number, number, number] = [0.35, 0.35, 0.35];
+    for (let i = 0; i < opts.drape; i++) bend[i] = 0.62;
+    return geometry({
+      ext: [opts.thumbExtension ?? 0.2, 0.05, 0.05, 0.05, 0.05],
+      thumbAcross: opts.thumbAcross,
+      thumbAlong: opts.thumbAlong ?? 1.2,
+      knuckleBend: bend,
+      tipLift: opts.lift,
+    });
+  };
+
+  /** Tips pressed into the palm (A, S) versus resting on a thumb (E, T, N, M). */
+  const ON_PALM = 0.15;
+  const ON_THUMB = 0.34;
 
   const best = (g: ReturnType<typeof geometry>) =>
     [...LETTER_TEMPLATES]
@@ -534,38 +575,414 @@ describe('the fist cluster', () => {
       .sort((a, b) => b.score - a.score)[0].letter;
 
   /**
-   * A, T, N and M are the same closed fist; only the thumb moves. These pin the
-   * one measurement that separates them, because the obvious one — depth
-   * relative to the palm — depends on MediaPipe's z, which is invented whenever
-   * the thumb is hidden, and its invention looks like an A.
+   * A, T, N and M are the same closed fist; only the thumb moves — and in T, N
+   * and M the thumb is underneath the fingers, so MediaPipe never measures it.
+   * It infers one, and the inference is pulled toward the commonest fist, an A.
+   *
+   * So the cluster is decided by the fingers, which are visible, and the thumb
+   * only refines. These pin that ordering. The cases that matter are the
+   * occluded ones further down: they are the ones a real signer produces.
    */
   it('reads a thumb beside the index knuckle as A', () => {
-    expect(best(fist(0.0, 0.6))).toBe('A');
+    expect(best(fistOf({ drape: 0, lift: ON_PALM, thumbAcross: -0.1, thumbExtension: 0.6 }))).toBe('A');
   });
 
-  it('reads a thumb between index and middle as T, not A', () => {
-    expect(best(fist(0.3))).toBe('T');
+  it('reads one finger over the thumb as T, not A', () => {
+    expect(best(fistOf({ drape: 1, lift: ON_THUMB, thumbAcross: 0.3 }))).toBe('T');
   });
 
-  it('reads a thumb past the ring knuckle as M, not A', () => {
-    expect(best(fist(0.8))).toBe('M');
+  it('reads three fingers over the thumb as M, not A', () => {
+    expect(best(fistOf({ drape: 3, lift: ON_THUMB, thumbAcross: 0.8 }))).toBe('M');
   });
 
   it('places N between T and M', () => {
-    expect(best(fist(0.55))).toBe('N');
+    expect(best(fistOf({ drape: 2, lift: ON_THUMB, thumbAcross: 0.55 }))).toBe('N');
   });
 
-  it('orders the cluster monotonically across the knuckles', () => {
-    // Sweeping the thumb from the index knuckle to the pinky should walk
-    // A -> T -> N -> M and never jump back.
+  it('orders the cluster monotonically as fingers cover the thumb', () => {
     const order = ['A', 'T', 'N', 'M'];
-    const seen = [0.0, 0.3, 0.55, 0.8].map((across) => best(fist(across, across < 0.1 ? 0.6 : 0.2)));
+    const seen = ([0, 1, 2, 3] as const).map((drape) =>
+      best(
+        fistOf({
+          drape,
+          lift: drape === 0 ? ON_PALM : ON_THUMB,
+          thumbAcross: [-0.1, 0.3, 0.55, 0.8][drape],
+          thumbExtension: drape === 0 ? 0.6 : 0.2,
+        }),
+      ),
+    );
     expect(seen).toEqual(order);
+  });
+
+  /**
+   * The bug this cluster keeps regressing to, and the reason for everything
+   * above: the fingers say T, N or M while the hidden thumb reads as an A's.
+   * The visible evidence has to win.
+   */
+  it('reads a T as T even when the hidden thumb reads like an A', () => {
+    expect(
+      best(fistOf({ drape: 1, lift: ON_THUMB, thumbAcross: 0.05, thumbExtension: 0.35, thumbAlong: 1.15 })),
+    ).toBe('T');
+  });
+
+  it('reads an M as M even when the hidden thumb reads like an A', () => {
+    expect(
+      best(fistOf({ drape: 3, lift: ON_THUMB, thumbAcross: 0.1, thumbExtension: 0.35, thumbAlong: 1.15 })),
+    ).toBe('M');
+  });
+
+  /**
+   * The safety property on that inversion. Both the drape count and the tip
+   * lift are reasoned from how the letters are formed rather than measured from
+   * signers, so the failure that matters is them saying nothing useful. When
+   * they do, the cluster has to fall back to the thumb and to A — the previous
+   * behaviour — rather than inverting into a confident wrong answer.
+   */
+  it('falls back to A rather than inverting when the fingers say nothing', () => {
+    expect(
+      best(fistOf({ drape: 0, lift: ON_PALM, thumbAcross: 0.1, thumbExtension: 0.35, thumbAlong: 1.15 })),
+    ).toBe('A');
+  });
+
+  it('never reads a true fist as a tucked letter, whatever the thumb says', () => {
+    // Tips against the palm with nothing draped: there is no room under them
+    // for a thumb, so T, N and M are all wrong however the thumb is reported.
+    for (const thumbAcross of [0.3, 0.55, 0.8]) {
+      expect(['T', 'N', 'M']).not.toContain(
+        best(fistOf({ drape: 0, lift: ON_PALM, thumbAcross })),
+      );
+    }
   });
 
   it('still offers the rest of the cluster when it picks one', () => {
     // The correction the user needs is often not in the top three, so the UI
     // offers the cluster; that map has to stay populated for A.
     expect(CONFUSION_CLUSTERS.A).toEqual(expect.arrayContaining(['T', 'M', 'N', 'S']));
+  });
+});
+
+/**
+ * The fist cluster's second signal.
+ *
+ * Everything above keys on where the thumb tip is, and the thumb tip in T, N
+ * and M is underneath the fingers — MediaPipe does not measure it, it invents
+ * one, and the invention looks like an A. These pin the independent signal
+ * taken from the fingers, which are in plain view: how many of them are lying
+ * over the thumb, read off where each finger's bend sits.
+ *
+ * Reasoned from how the letters are formed, not measured from signers. It is
+ * wired in as a nudge rather than a veto for exactly that reason, and these
+ * tests pin the direction of the nudge, not a threshold.
+ */
+describe('fingers lying over the thumb', () => {
+  const draped = (bends: [number, number, number], thumbAcross: number) =>
+    geometry({ ext: [0.2, 0.05, 0.05, 0.05, 0.05], thumbAcross, knuckleBend: bends });
+
+  const best = (g: ReturnType<typeof geometry>) =>
+    [...LETTER_TEMPLATES]
+      .map((t) => ({ letter: t.letter, score: t.score(g) }))
+      .sort((a, b) => b.score - a.score)[0].letter;
+
+  const scoreOf = (g: ReturnType<typeof geometry>, letter: string) =>
+    LETTER_TEMPLATES.find((t) => t.letter === letter)!.score(g);
+
+  const FIST: [number, number, number] = [0.35, 0.35, 0.35];
+  const ONE_OVER: [number, number, number] = [0.62, 0.35, 0.35];
+  const TWO_OVER: [number, number, number] = [0.62, 0.62, 0.35];
+  const THREE_OVER: [number, number, number] = [0.62, 0.62, 0.62];
+
+  it('counts one, two and three fingers over the thumb', () => {
+    expect(draped(FIST, 0.4).drapedCount).toBeCloseTo(0, 1);
+    expect(draped(ONE_OVER, 0.4).drapedCount).toBeCloseTo(1, 1);
+    expect(draped(TWO_OVER, 0.4).drapedCount).toBeCloseTo(2, 1);
+    expect(draped(THREE_OVER, 0.4).drapedCount).toBeCloseTo(3, 1);
+  });
+
+  it('shifts the T/M balance with the finger count alone', () => {
+    // Thumb position held fixed, so the count is the only thing that changes.
+    // Stated as a ratio because the claim is about direction, not about where
+    // the two happen to cross — that depends on thumbAcross, which is the
+    // measurement this signal exists to back up rather than replace.
+    const one = draped(ONE_OVER, 0.5);
+    const three = draped(THREE_OVER, 0.5);
+    expect(scoreOf(one, 'T') / scoreOf(one, 'M')).toBeGreaterThan(
+      scoreOf(three, 'T') / scoreOf(three, 'M'),
+    );
+  });
+
+  it('raises M and lowers T as more fingers cover the thumb', () => {
+    const one = draped(ONE_OVER, 0.5);
+    const three = draped(THREE_OVER, 0.5);
+    expect(scoreOf(three, 'M')).toBeGreaterThan(scoreOf(one, 'M'));
+    expect(scoreOf(three, 'T')).toBeLessThan(scoreOf(one, 'T'));
+  });
+
+  it('leans away from the tucked letters when nothing is over the thumb', () => {
+    const clenched = draped(FIST, 0.5);
+    const covered = draped(TWO_OVER, 0.5);
+    expect(scoreOf(covered, 'N')).toBeGreaterThan(scoreOf(clenched, 'N'));
+  });
+
+  it('does not override a thumb that is clearly beside the index', () => {
+    // A nudge, not a veto: an unambiguous A stays an A even if the fingers
+    // happen to read as draped.
+    expect(best(geometry({ ext: [0.6, 0.05, 0.05, 0.05, 0.05], thumbAcross: 0, knuckleBend: TWO_OVER }))).toBe('A');
+  });
+});
+
+/**
+ * Every sign, against a canonical observation of itself.
+ *
+ * The vocabulary is hand-written geometry rules, and the way hand-written rules
+ * fail as they multiply is not a crash — it is one template quietly shadowing
+ * another. Somebody signs WAIT and gets WANT, and nothing anywhere reports a
+ * problem.
+ *
+ * These caught four real collisions the moment they were written, on a
+ * vocabulary that had just grown from 29 signs to 49:
+ *
+ *   HELLO ate THANK-YOU     — both a flat hand near the face travelling out,
+ *                             and HELLO asked for strictly less. Fixed by
+ *                             requiring a salute to go out and not down.
+ *   EAT ate HOME            — both flattened-O at the face, separated only by
+ *                             how far off-centre the hand sits.
+ *   THANK-YOU tied BAD      — the same hand leaving the same chin in the same
+ *                             direction. Only the palm turning over tells them
+ *                             apart, which is why orientation had to exist.
+ *   WANT tied BIG           — the same two claw hands travelling the same
+ *                             distance in opposite directions.
+ *
+ * See tests/helpers/signCases.ts for what these do and do not prove. Short
+ * version: they show the rules are mutually consistent, not that they work on a
+ * real signer.
+ */
+describe('every built-in sign', () => {
+  it('has a canonical observation, and no observation is orphaned', () => {
+    // Adding a sign without a case here would let it skip every check below.
+    expect(BUILT_IN_GLOSSES.filter((g) => !SIGN_CASES[g])).toEqual([]);
+    expect(Object.keys(SIGN_CASES).filter((g) => !BUILT_IN_GLOSSES.includes(g))).toEqual([]);
+  });
+
+  it.each(BUILT_IN_GLOSSES.map((g) => [g]))('%s wins its own observation', (gloss) => {
+    const scored = SIGN_TEMPLATES.map((t) => ({ gloss: t.gloss, score: t.score(caseFor(gloss)) })).sort(
+      (a, b) => b.score - a.score,
+    );
+    expect(scored[0].gloss).toBe(gloss);
+  });
+
+  it.each(BUILT_IN_GLOSSES.map((g) => [g]))('%s is what gets offered, and clears the floor', (gloss) => {
+    const candidates = recognizeSign(caseFor(gloss));
+    expect(candidates.length).toBeGreaterThan(0);
+    expect(candidates[0].gloss).toBe(gloss);
+    expect(candidates[0].raw).toBeGreaterThan(REJECTION_FLOOR);
+  });
+
+  /**
+   * The clause that makes a sign a sign rather than a description of resting.
+   *
+   * MOTHER was written as "open hand, at your face, one hand, not moving" and
+   * scored 0.50 on a relaxed hand resting near the face — over the rejection
+   * floor, from a hand doing nothing. Every clause it had was also a true
+   * statement about rest.
+   *
+   * So: no sign may match an idle hand, checked in every zone, because a
+   * template whose conditions are all satisfied by stillness will fire on
+   * stillness however good its handshape gate is.
+   */
+  it.each([['head'], ['face'], ['neck'], ['chest'], ['waist']] as const)(
+    'stays silent for a relaxed hand idling in the %s zone',
+    (zone) => {
+      for (const x of [0.05, 0.3, 0.55]) {
+        const idle = observation({
+          dominant: { shape: IDLE(), zone, from: { x, y: 0 }, path: 0.04 },
+        });
+        const best = Math.max(...SIGN_TEMPLATES.map((t) => t.score(idle)));
+        expect(best).toBeLessThan(REJECTION_FLOOR);
+        expect(recognizeSign(idle)).toHaveLength(0);
+      }
+    },
+  );
+
+  /**
+   * CONFUSABLE has to keep up with the vocabulary, or the correction sheet
+   * stops offering the sign the user actually made. Anything scoring this close
+   * to a sign's own observation is a real near-miss and must be listed.
+   */
+  it.each(BUILT_IN_GLOSSES.map((g) => [g]))('%s lists its real near-misses', (gloss) => {
+    const near = SIGN_TEMPLATES.filter(
+      (t) => t.gloss !== gloss && t.score(caseFor(gloss)) >= 0.5,
+    ).map((t) => t.gloss);
+    const listed = CONFUSABLE[gloss] ?? [];
+    expect(near.filter((g) => !listed.includes(g))).toEqual([]);
+  });
+
+  it('names confusions symmetrically', () => {
+    // Whoever signed it needs the other one offered, whichever way round the
+    // recogniser got it wrong.
+    for (const [gloss, others] of Object.entries(CONFUSABLE)) {
+      for (const other of others) {
+        expect(CONFUSABLE[other] ?? []).toContain(gloss);
+      }
+    }
+  });
+});
+
+/**
+ * Body anchors, from a pose rather than a hand-built observation.
+ *
+ * Everything above builds HandSamples directly, so it tests the rules and not
+ * the thing that feeds them. These go through sampleFrame with a synthetic pose
+ * and real hand landmarks, which is the path the app actually runs.
+ *
+ * The capability under test is new and was the missing half of "location":
+ * MediaPipe returns the nose, eyes, ears and mouth on every frame and the
+ * pipeline was discarding all of it, keeping only the two shoulders. So the
+ * only thing a rule could say about WATER was "somewhere in the face band",
+ * which is equally true of a W hand held beside your head.
+ */
+describe('body anchors', () => {
+  const SHOULDER_Y = 0.5;
+  const HALF_WIDTH = 0.12;
+
+  /** A pose with a face, in image coordinates. Shoulder width is the unit. */
+  function poseWithFace(): Point3[] {
+    const unit = HALF_WIDTH * 2;
+    const p: Point3[] = Array.from({ length: 33 }, () => ({ x: 0.5, y: SHOULDER_Y, z: 0 }));
+    const put = (i: number, x: number, y: number) => {
+      p[i] = { x: 0.5 + x * unit, y: SHOULDER_Y + y * unit, z: 0, visibility: 1 } as Point3;
+    };
+    put(0, 0, -0.7); // nose
+    // Facing the camera, the subject's left is on the viewer's right, so it
+    // sits at HIGHER image x. Getting this backwards is the easiest mistake in
+    // the file and it silently mirrors the whole face.
+    put(2, 0.16, -0.86); // subject's left eye
+    put(5, -0.16, -0.86); // subject's right eye
+    put(7, 0.38, -0.78); // left ear
+    put(8, -0.38, -0.78); // right ear
+    put(9, 0.08, -0.56); // mouth left
+    put(10, -0.08, -0.56); // mouth right
+    put(11, 0.5, 0); // left shoulder
+    put(12, -0.5, 0); // right shoulder
+    return p;
+  }
+
+  /**
+   * A hand at a given point in BODY space, for the named dominant hand.
+   *
+   * The conversion matters and is easy to get wrong: body +x is outward on the
+   * dominant side, and for a right-dominant signer facing the camera that is
+   * *lower* image x. Passing an image offset here instead is what made the ear
+   * come out on the far side of the head.
+   */
+  function handAt(x: number, y: number, dominant: 'Left' | 'Right' = 'Right'): HandFrame {
+    const unit = HALF_WIDTH * 2;
+    const cx = 0.5 + x * unit * (dominant === 'Right' ? -1 : 1);
+    const cy = SHOULDER_Y + y * unit;
+    // Small enough that wrist and fingertips are close together; this test is
+    // about where the hand is, not what shape it makes.
+    const landmarks: Point3[] = Array.from({ length: 21 }, (_, i) => ({
+      x: cx + (i % 3) * 0.004,
+      y: cy + Math.floor(i / 3) * 0.004,
+      z: 0,
+    }));
+    return { landmarks, world: landmarks, handedness: dominant, handednessScore: 0.99 };
+  }
+
+  const frameAt = (x: number, y: number) => ({
+    t: 0,
+    width: 1000,
+    height: 1000,
+    pose: poseWithFace(),
+    hands: [handAt(x, y)],
+  });
+
+  it.each([
+    ['chin', 0, -0.44],
+    ['mouth', 0, -0.56],
+    ['forehead', 0, -1.0],
+    ['ear', 0.38, -0.78],
+    ['cheek', 0.3, -0.6],
+    ['chest', 0, 0.3],
+  ] as const)('puts a hand at the %s nearest the %s', (anchor, x, y) => {
+    const sampled = sampleFrame(frameAt(x, y), 'Right');
+    expect(sampled.dominant).not.toBeNull();
+    expect(sampled.dominant!.near[anchor]).toBeLessThan(0.16);
+    expect(sampled.bodyUnknown).toBe(false);
+  });
+
+  it('tells the chin from the forehead, which zones alone cannot', () => {
+    // Both are "the head or face band". The whole point of anchors is that
+    // WATER at the chin and FATHER at the forehead stop being the same place.
+    const chin = sampleFrame(frameAt(0, -0.44), 'Right').dominant!;
+    const forehead = sampleFrame(frameAt(0, -1.0), 'Right').dominant!;
+    expect(chin.near.chin).toBeLessThan(chin.near.forehead);
+    expect(forehead.near.forehead).toBeLessThan(forehead.near.chin);
+  });
+
+  it('measures from the fingertips, not the wrist', () => {
+    // A hand held below the chin with its fingers reaching up to it is at the
+    // chin. Measured from the wrist it is a whole hand-length away, which is
+    // how far off "near the face" was as a proxy for "touching your chin".
+    const unit = HALF_WIDTH * 2;
+    const wristY = SHOULDER_Y + -0.15 * unit;
+    const landmarks: Point3[] = Array.from({ length: 21 }, () => ({ x: 0.5, y: wristY, z: 0 }));
+    for (const tip of [HAND_LANDMARK.INDEX_TIP, HAND_LANDMARK.MIDDLE_TIP, HAND_LANDMARK.THUMB_TIP]) {
+      landmarks[tip] = { x: 0.5, y: SHOULDER_Y + -0.44 * unit, z: 0 };
+    }
+    const sampled = sampleFrame(
+      {
+        t: 0,
+        width: 1000,
+        height: 1000,
+        pose: poseWithFace(),
+        hands: [{ landmarks, world: landmarks, handedness: 'Right', handednessScore: 0.99 }],
+      },
+      'Right',
+    );
+    expect(sampled.dominant!.near.chin).toBeLessThan(0.1);
+    // The wrist itself is nowhere near it.
+    expect(Math.abs(sampled.dominant!.pos.y - -0.44)).toBeGreaterThan(0.25);
+  });
+
+  it('mirrors the ear to the dominant side for either handedness', () => {
+    // +x is outward on the dominant side, so "the ear" is a different physical
+    // ear for a left-handed signer and the rules must not have to know that.
+    const right = sampleFrame(frameAt(0.38, -0.78), 'Right').dominant!;
+    // Same body-space point — outward on the dominant side — which is a
+    // different physical ear and a different image position for each.
+    const leftFrame = { ...frameAt(0, 0), hands: [handAt(0.38, -0.78, 'Left')] };
+    const left = sampleFrame(leftFrame, 'Left').dominant!;
+    expect(right.near.ear).toBeLessThan(0.16);
+    expect(left.near.ear).toBeLessThan(0.16);
+  });
+
+  it('falls back to assumed proportions when the face is not visible', () => {
+    // Losing the mouth is no reason to stop knowing where the chest is, so the
+    // fallback is per-anchor rather than all-or-nothing.
+    const pose = poseWithFace().map((p, i) =>
+      i < 11 ? ({ ...p, visibility: 0.1 } as Point3) : p,
+    );
+    const sampled = sampleFrame({ ...frameAt(0, -0.44), pose }, 'Right');
+    expect(sampled.bodyUnknown).toBe(false);
+    expect(sampled.dominant!.near.chin).toBeLessThan(0.2);
+  });
+
+  it('reports no anchors at all when there is no body reference', () => {
+    const sampled = sampleFrame({ ...frameAt(0, -0.44), pose: null }, 'Right');
+    expect(sampled.bodyUnknown).toBe(true);
+    expect(sampled.dominant!.near.chin).toBeGreaterThan(1);
+  });
+
+  it('keeps the closest approach across a window, not the average', () => {
+    // DEAF touches the ear and then the chin. An average would say it was never
+    // quite at either.
+    const frames: SignFrame[] = [
+      sampleFrame(frameAt(0.38, -0.78), 'Right'),
+      sampleFrame(frameAt(0.2, -0.6), 'Right'),
+      sampleFrame(frameAt(0, -0.44), 'Right'),
+    ];
+    const track = observe(frames)!.dominant!;
+    expect(track.reached.ear).toBeLessThan(0.16);
+    expect(track.reached.chin).toBeLessThan(0.16);
   });
 });

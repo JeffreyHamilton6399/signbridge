@@ -285,8 +285,13 @@ export class Landmarker {
       height,
       hands: handResult.landmarks.map((landmarks, i) => {
         const category = (handResult.handedness ?? handResult.handednesses)?.[i]?.[0];
+        const world = handResult.worldLandmarks?.[i];
         return {
           landmarks: toPoints(landmarks),
+          // Metric, hand-centred 3D. MediaPipe computes it for every frame
+          // whether or not we read it, so this is free, and it is what the
+          // handshape rules would rather be written against. See HandFrame.
+          world: world ? toPoints(world) : undefined,
           // MediaPipe labels handedness as seen in the image. The camera image
           // is not mirrored here — we mirror only for display — so the label is
           // already the physical hand.

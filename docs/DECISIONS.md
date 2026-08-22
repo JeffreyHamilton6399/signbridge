@@ -121,7 +121,7 @@ sign recognition work with no training at all, the answer was to do for whole
 signs what `letterTemplates.ts` already does for the manual alphabet: write the
 geometry down.
 
-- **29 built-in signs as rules** (`signTemplates.ts`). Chosen for signs that are
+- **Built-in signs as rules** (`signTemplates.ts`), 29 at first and 97 now. Chosen for signs that are
   common *and* geometrically separable from each other. Signs differing only by a
   handshape the camera cannot resolve are deliberately absent — including them
   would mean guessing.
@@ -461,3 +461,923 @@ Noted for later: **facial landmarks for signs.** Non-manual markers — eyebrows
 mouth morphemes, head tilt — carry grammar the app currently cannot see at all.
 FaceLandmarker is already vendored and the worker can enable it. Parked
 deliberately; the alphabet should be solid first.
+
+## Reading the hand better, and getting it on screen sooner
+
+Two complaints, one round of work: letters and signs were read wrong too often,
+and the tracked hand felt like it was trailing the real one.
+
+### Handshape now comes from world landmarks
+
+MediaPipe has been returning two versions of every hand all along and the app
+was only reading one. `landmarks` is the projection onto the image; the
+`worldLandmarks` set is metric, hand-centred, and free of perspective.
+
+The rules are written in ratios of small distances — how much of a finger's arc
+length is spanned by the straight line from knuckle to tip, how far the thumb
+tip sits along the knuckle line — and a projection wrecks exactly those. A
+finger pointing at the camera is foreshortened to almost nothing in x and y, so
+an extended finger reads as a curled one; the z channel that would have
+recovered its true length is a weakly-supervised depth offset in image units,
+not a measurement. That is a large part of why D, L, G and the pointing letters
+degraded the instant a hand turned off-axis, and it is fixed by reading the
+coordinates that were already there.
+
+`pointing` still comes from the image, because world space throws the camera
+away and P, Q, G and H are distinguished by nothing except which way the hand
+points in the frame. One function, `geometryOf()`, owns that split so there is
+no second place for it to be decided differently.
+
+**What did not change, deliberately:** the 63-float feature vector. It is the
+space every stored calibration sample, every recorded custom sign and
+`training/normalize.py` are expressed in. Moving it would have thrown away work
+users had already put in, without telling them. Only the rules read world
+coordinates; the learned path is untouched.
+
+### The landmark stream is filtered before anything reads it
+
+A 1€ filter (Casiez et al., CHI 2012) on every landmark channel. Its cutoff
+frequency rises with the measured speed of the point, so a still hand is
+filtered hard and a moving hand is barely filtered at all — which is the one
+combination that helps here. A moving average would have bought the same
+steadiness by adding the lag this work exists to remove.
+
+It is an accuracy feature as much as a latency one. Jitter of a pixel or two on
+a fingertip moves those small-distance ratios enough to flicker the classifier
+between neighbouring letters, and every flicker restarts the dwell timer.
+
+Exposed as **Hand steadiness** in settings, defaulting to standard. Existing
+installs migrate to standard rather than to off: off is what they had, and it is
+the worse experience. The setting is there so someone can *ask* for raw
+tracking, not so they get it by accident.
+
+### The main thread stops taking pictures nobody will look at
+
+The worker already dropped a frame that arrived while it was busy. But by then
+the main thread had paid for a full `createImageBitmap` — a GPU copy and a
+synchronisation point — and thrown the result away. Several times a second, that
+is exactly the kind of main-thread work that makes video stutter.
+
+The client now tracks whether a frame is outstanding and does not take the
+picture at all until the worker answers, with a one-second timeout so a lost
+message cannot stall capture forever. The worker-side drop remains as a
+backstop.
+
+With real backpressure in place, the cost-based frame-rate backoff on the worker
+path went away: it was guessing at a number the in-flight guard now knows
+exactly, and guessing low only widens the gap between hand and caption. The
+inline path keeps its backoff, because there inference really does cost
+main-thread time.
+
+There was also a rate-aliasing cliff worth naming. The capture gate tested
+`elapsed >= interval` exactly, so whenever the computed interval crept just past
+the camera's frame period — 34 ms against a 30 fps camera's 33.3 — every single
+callback failed by a hair and capture halved to 15 fps, precisely when it could
+least afford to. The gate now allows a quarter-interval of slack.
+
+### The overlay was extrapolating from the wrong instant
+
+It predicts forward along the measured velocity to cover the gap between when a
+frame was captured and when it is drawn. It was measuring that gap from when the
+frame *arrived back* on the main thread — which omits the inference and transfer
+cost, i.e. the entire quantity being corrected for. Measuring from `frame.t`
+closes it. Small change, and the most directly visible one in this batch.
+
+### Letters commit on averaged evidence, not on votes
+
+The smoothing window used to hold each frame's winning label and take a
+majority. That throws away everything except the argmax, which is the wrong
+thing to do in the fist cluster where the margins are a few hundredths: five
+frames that each said "T at 0.34, A at 0.36" cast five votes for A and none for
+T. The committer now averages the distributions across the window when the
+caller supplies them, so near-ties stay visible and the frames that are actually
+decisive settle the matter.
+
+Frames with no hand count as zeros rather than being skipped, which gives the
+"no sign" behaviour for free: a letter seen in two frames out of five cannot
+average above 0.4 and never reaches the threshold. Hard-label voting is still
+there for callers that have no distribution to give.
+
+**None of this is a substitute for a trained model or for calibration.** It is a
+better reading of the same evidence, and the honest per-letter numbers in the
+debug panel still come from the user's own samples.
+
+## Making the scan itself better
+
+The previous round improved what happens *after* a frame arrives. This one is
+about the frame.
+
+### Hands now have an identity
+
+MediaPipe reports each frame independently. It hands you a list of hands and a
+Left/Right label per hand, and promises neither that the hand at index 0 this
+frame is the hand that was at index 0 last frame, nor that the label is the
+same. Both change in practice — the label flips on rotation, near the frame
+edge, and when the hands cross — and three separate consumers had quietly
+assumed otherwise:
+
+- the 1€ filter keyed its state on the handedness label, so every flip threw
+  away the filter history and let a frame of raw jitter through to the classifier
+- the overlay declined to extrapolate when labels disagreed between frames, so a
+  flip showed up as the skeleton stalling
+- `pickHand` in auto mode took whichever hand had the higher handedness score,
+  which can swap mid-word
+
+`vision/tracking.ts` establishes identity once, before anything else looks at a
+frame. Hands are matched to the previous frame by wrist position — they cannot
+move far in 33ms — and each track accumulates its own evidence about which
+physical hand it is. The reported label is that accumulated verdict, not this
+frame's guess, weighted by how sure the detector was, which is what stops it
+flickering. A hand that teleports across the frame, or reappears after being
+gone, gets a new id rather than a track being stretched to reach it.
+
+The reported `handednessScore` changed meaning: it is now how settled the
+verdict is, not how sure one frame was. A hand whose label has been flip-flopping
+should not claim 98%.
+
+### The app says when it cannot see, instead of guessing
+
+Most recognition failures are not model failures. The hand is half out of frame,
+or far away, or turned edge-on so the fingers occlude each other, or moving too
+fast to be anything but a smear. In every one of those cases MediaPipe still
+produces 21 confident-looking landmarks — several of them extrapolated past the
+frame edge — and the classifier still returns its best guess, with a confidence
+that knows nothing about any of it.
+
+`features/scanQuality.ts` measures the input rather than the output: hand span
+against frame height, landmarks outside the frame, wrist speed in hand spans per
+second, and how edge-on the palm is. It never consults what the classifier said,
+because a check that reads the answer it is meant to be checking is not a check.
+
+When the view is unusable, fingerspelling feeds the committer a null label and
+resets the motion buffer. No auto-space — the hand is still up, it just cannot
+be read — and nothing is committed. **This can only ever withhold.** There is no
+path by which it raises a confidence or forces a commit, and the tests say so.
+
+The framing guide's caption, which was static advice nobody needed after the
+first ten seconds, now carries the live reason: "Bring your whole hand into
+view", "Move closer to the camera", "Hold the shape still for a moment", "Turn
+your palm toward the camera". Blocking problems are stated plainly; a merely
+imperfect view gets the same words in a quieter register, because a hint that
+shouts at every small imperfection is one people learn to ignore. It is a polite
+live region, not an assertive one — a screen reader interrupting every letter to
+say "move closer" would be worse than saying nothing.
+
+Thresholds are deliberately generous. False nagging is worse than silence, and
+an app that refuses to read a hand it could have read is worse than one that
+occasionally guesses.
+
+## Settings stopped being a wall
+
+Forty-nine controls in one flat scroll. On a 390px phone that is roughly eight
+screens of undifferentiated rows, and the effect of making every setting equally
+available is that every setting is equally hard to find — including the two or
+three that turn a frustrating session into a usable one.
+
+Nothing was deleted. The default *view* was.
+
+**One section open at a time.** Each of the ten groups is now a collapsed row
+carrying its current value: "600 ms dwell · commits at 65%", "Mirrored · hand
+overlay", "Per word · system voice". All ten fit on one phone screen, so the
+panel opens as a contents page you can read at a glance — and often the summary
+is the answer, so you never open the section at all.
+
+**One switch for the rest.** "Show advanced settings", off by default, at the
+bottom of the panel rather than the top: it describes what appears inside the
+sections above it, and leading with it would make the first thing in Settings a
+setting about settings. Behind it go frame rates, inference backends, speech
+pitch, model precision, interim speech results — real settings a few people
+genuinely need, in front of nobody by default. Advanced controls appear below
+the essentials in a marked block, so turning the switch on adds rather than
+rearranges.
+
+**Except one thing, which cannot be folded away.** The first pass put
+"on-device only" inside a collapsed Privacy section, and an E2E test failing was
+what surfaced it. The brief is explicit that this is the single best trust
+feature the app has, and burying the app's strongest claim about itself two taps
+deep is exactly the wrong trade. There is now a permanent line under the header,
+above the accordion: *Everything stays on this device.* The Privacy section
+still holds the controls.
+
+## The control bar measures itself
+
+Captions sat at a fixed 96px from the bottom while the bar above them was any
+height it liked — suggestions and correction chips come and go, and on a narrow
+screen they wrapped to new rows. Picking one offset means wasting video for
+everyone at the tall end and colliding at the short end.
+
+The bar now publishes its height as `--sb-bar-h` through a ResizeObserver and
+the caption band reads it. The chip rows also stopped wrapping: they scroll
+sideways instead, so a fourth suggestion appearing no longer grows the bar by a
+row and moves the buttons out from under the thumb already reaching for them.
+
+## Touch targets, and things that were nearly the same size
+
+Mode chips were 28px tall next to 44px utility buttons in the same row — both
+hard to hit and visibly mismatched. Everything a thumb can hit is now at least
+44px, except in landscape on a phone, where the whole bar compresses because
+380px of height cannot spend a quarter of itself on buttons.
+
+The utility icons were ⚙ ◍ ⏺ — text glyphs, whose font, weight and baseline vary
+enough between platforms that the row looked misaligned on some of them. They
+are SVG now. And the mode labels were "A·B·C", "Signs", "Talk", "Text→ASL": a
+glyph string, a word, a word, and an arrow formula, reading as three different
+kinds of thing inside one switcher. They are four plain words.
+
+## Why M and T were still wrong: two bugs and a missing signal
+
+"Corrections become training data" was written up as the real fix for the fist
+cluster. It was not working, for two separate reasons, and both of them were in
+the plumbing rather than in the idea.
+
+### The correction filed the wrong frame
+
+`lastFeaturesRef` was overwritten on every frame and read when the user tapped
+the correction. Those are seconds apart. By the time somebody notices a wrong
+letter, finds it in the strip and taps it, the hand has moved on — halfway into
+the next letter, or back down to rest. So the sample labelled "T" was whatever
+the hand was doing at tap time.
+
+That is worse than filing nothing. It drags the T prototype toward a pose that
+is not a T, so the more diligently someone corrected, the worse their model got.
+
+The frames that produced a letter are now frozen at the moment it commits, and a
+correction files three of them, spread across the hold. Frames the scan-quality
+check rejected are never remembered, and a snapshot is spent once — tapping a
+second alternate corrects the correction rather than teaching both.
+
+### The fitted head was never consulted
+
+Two personal heads are fitted from the same samples: nearest-centroid
+prototypes, and a softmax head. The head was installed through
+`setOnnxModel`, which only `predictAsync` reads — and nothing calls
+`predictAsync`. The frame loop calls `predict`. So the head was fitted, stored,
+reloaded on every launch, and never once used to classify anything. All
+personalization was coming from the prototypes.
+
+That matters most for exactly the letters it was meant to fix. Distance to a
+centroid weights all 63 coordinates equally, so a T and an A that differ in a
+handful and agree in the rest come out nearly equidistant. A fitted head learns
+which coordinates carry the difference. It is a 24×63 matrix multiply —
+microseconds — so it now runs inside `predict`, in its own slot, with the ONNX
+slot left for a model that really would be async.
+
+It stays silent below three examples of its rarest letter. A head fitted on one
+or two samples per class memorises rather than generalises, and because it
+memorises perfectly it comes out almost one-hot — confident enough to override
+the prototypes even at a low blend weight. A ramp alone did not hold it back; a
+floor does.
+
+### Partial calibration was making things worse
+
+The prototype blend scaled every letter down by the blend weight and then added
+the personal mass back only to the calibrated ones. With six of twenty-four
+letters recorded, those six absorbed a third of all probability regardless of
+what the hand was doing. Anyone who started calibration and stopped partway
+through was quietly degrading the app.
+
+Both personal heads are now confined to the letters they have seen: they
+redistribute the mass already sitting on those letters and leave every other
+letter untouched. Two tests pin it, one of them checking exact equality on the
+uncalibrated letters.
+
+This is what makes the next part possible.
+
+### Ninety seconds instead of four minutes
+
+Full calibration is twenty-four letters and about four minutes, which is long
+enough that most people never start. The fist cluster is six letters and about
+ninety seconds, and it is where nearly all the errors are. It is now its own
+entry in Settings, above the full run, and it says why it exists.
+
+### A signal that does not depend on the thumb
+
+Everything keyed on `thumbAcross` is asking about a thumb that, in T, N and M,
+is underneath the fingers. MediaPipe does not measure it; it infers one, and the
+inference is pulled toward the commonest fist, an A.
+
+The fingers, though, are in plain view, and they are doing different things:
+
+- **E** — fingertips reach down to meet a folded thumb, so the knuckles stay
+  relatively open and the bend piles up in the middle and end joints.
+- **A, S** — a real fist: every joint contributes about equally.
+- **T, N, M** — the covering fingers lie *over* the thumb, which props them up.
+  They fold sharply at the knuckle and stay comparatively straight past it — and
+  only the fingers actually covering the thumb do, which is one in T, two in N,
+  three in M.
+
+`knuckleBend` measures what share of each finger's bend happens at the knuckle;
+`drapedCount` turns that into a soft count of fingers lying over the thumb. That
+count maps directly onto T, N and M without consulting the thumb at all.
+
+**This is reasoned from how the letters are formed, not measured from signers.**
+It is wired in as a nudge and never as a veto, so if the reasoning is wrong the
+templates degrade rather than break, and an unambiguous A stays an A. Validating
+it against real recordings is the obvious next step. Until then, personalization
+is still the thing that actually fixes this cluster — which is why the two bugs
+above mattered more than the new feature does.
+
+## Letting the fingers outvote the thumb
+
+`drapedCount` was added last round as a nudge and it did not fix the reported
+problem: a T or an M still read as an A. Scoring the templates against a fist
+whose thumb reads the way MediaPipe reports a hidden one showed why, and the
+numbers were not close — A took 61–70% of the distribution while the fingers
+were unambiguously saying M.
+
+### A collected the letters nobody else could claim
+
+A's thumb predicate was `below(thumbAcross, 0.18, 0.2)` — "the thumb is not far
+across the knuckles". Every hallucinated thumb satisfies that, because the
+hallucination *is* an A's thumb. T, N and M meanwhile each required their thumb
+to be somewhere specific, and a hidden thumb is never there, so their predicate
+zeroed and the letter was unreachable.
+
+That asymmetry, not the missing feature, was the bug. The loosest requirement in
+a cluster collects every hand the tighter ones reject.
+
+So A now has to *show* its thumb rather than merely not contradict one: out past
+the index knuckle on the radial side and above the knuckle line. A's thumb is
+the one fist thumb fully in view, so requiring evidence of it is fair. And T, N
+and M's thumb predicates became priors bounded in [0.55, 1] — they shade the
+choice between the three when the guess is good and get out of the way when it
+is not.
+
+### A second signal off the fingers
+
+`tipLift` is the perpendicular distance from the index/middle/ring fingertips to
+the palm plane. In A and S the tips press into the palm; in E, T, N and M they
+rest on a thumb and sit a thumb's thickness clear of it. Tips and palm are both
+in plain view.
+
+Paired with `drapedCount` it separates the cluster in two dimensions rather than
+one: A and S are low-lift undraped, E is high-lift undraped, and T, N and M are
+high-lift with one, two and three fingers draped. E gains a positive signature
+it did not have.
+
+### The floor under both
+
+Both features are still reasoned from how the letters are formed rather than
+measured from signers, so neither may multiply a letter's score by less than
+`REASONED_FLOOR` (0.2). One alone moves a letter by at most 5x — enough to shade
+a near-tie, not enough to overturn the thumb. Two agreeing move it by 25x, which
+is enough, and that is the case where every visible part of the hand says the
+same thing and only the invisible part disagrees.
+
+The failure mode this guards is the features saying nothing useful. A test pins
+it: when the fingers are uninformative the cluster falls back to A and the thumb
+— the old behaviour — rather than inverting into a confident wrong answer.
+
+### Making the reasoning checkable, and the fix findable
+
+Two things follow from "reasoned, not measured":
+
+- The debug panel now reports `drapedCount`, `tipLift` and `thumbAcross` live,
+  with the expected band for each letter written next to them. Holding the six
+  fists for a moment each is enough to find out whether the reasoning holds for
+  a given hand, which turns an assumption into something a user can falsify in
+  about a minute.
+- The ninety-second fist calibration is offered in the frame after three
+  corrections inside the cluster, instead of only in Settings. Three corrections
+  is the app learning that its generic geometry does not fit this hand, and a
+  fitted personal head is what fixes that — no amount of rule-tuning will.
+
+Confidence in the occluded cases lands around 35–45%, below the 0.65 commit
+threshold. So those letters are now withheld and offered as alternates rather
+than committed. That is the intended trade: it was previously committing A at
+70% and being wrong. The threshold was not touched.
+
+## Replacing the personal model: a small MLP, and augmentation
+
+Asked to make recognition "actually good", with a suggestion of running Ollama
+in GitHub. Two separate ideas there, one wrong and one right.
+
+**Wrong: an LLM as the classifier.** Ollama runs language models. The input here
+is 63 floats of hand geometry at 30fps. An LLM is roughly three orders of
+magnitude too slow for the 150ms budget and less accurate than a 20KB MLP,
+because this is not a language problem.
+
+**Wrong: inference in the cloud.** A network round-trip per frame breaks the
+constraint `privacy.onDeviceOnly` exists to enforce, and GitHub Actions is CI,
+not an inference host.
+
+**Right: a small trained net is the fix**, and the architecture already had the
+slot for it. **Right: GitHub Actions for _training_** — this machine has no
+Python, which is the actual reason `training/` has never been run.
+
+### What shipped
+
+The personal head was multinomial logistic regression. That structure cannot
+represent a conjunction: a linear model's answer to two features is always the
+sum of its answers to each alone. The fist cluster *is* a conjunction — a thumb
+reading low-across means A when the fingers are flat and means "the tracker is
+guessing, ignore it" when they are draped. Opposite conclusions from the same
+coordinate, decided by a different one.
+
+So: one hidden layer, 63 -> 48 -> K, about 4,000 parameters, fitted in-browser.
+Not because bigger is better. Because the previous shape could not express the
+thing that was going wrong.
+
+Eight samples would ordinarily memorise that. Three things stop it, in order:
+fresh augmentation every epoch (each sample re-tilted and re-noised on every
+pass, so no vector is ever seen twice), a narrow hidden layer, and weight decay.
+
+`features/augment.ts` simulates out-of-plane tilt, per-landmark jitter, and
+**more jitter on z than on x or y** — z is a weakly supervised offset rather
+than a measurement, worst exactly where it matters most, and noising it harder
+is a direct instruction not to lean on it. Every variant is re-normalized
+through `normalizeHand`, so synthetic samples satisfy the same invariants as
+real ones and cannot drift from the frame path.
+
+### Measured
+
+Synthetic hands, fitted on one session and scored at a **different hand angle**,
+which is the situation a user is in every time they open the app after
+calibrating. Six trials.
+
+| | prototypes | linear (old) | MLP + aug (new) |
+|---|---|---|---|
+| all 10 letters | 81.8% | 68.1% | **89.2%** |
+| fist cluster | 71.4% | 67.2% | **95.6%** |
+
+The expected crossover — linear at low sample counts, MLP once there was enough
+— does not exist. The MLP wins at every count tried, including two samples per
+letter (89% vs 63% and 55%). Augmentation is why: two samples still produce
+hundreds of distinct training vectors, so the regime where a linear model's
+rigidity would protect it never arrives. `fitPersonalHead` therefore always
+fits the MLP; `trainLinearHead` stays only so older stored heads keep loading.
+
+These are synthetic hands. The comparison transfers; the absolute numbers do not.
+
+### The number the UI is allowed to print
+
+`trainAccuracy` sits near 100% whatever happens, so a held-out measure was added
+— and then checked against the thing it looks like it predicts:
+
+| scored | true cross-session | reported |
+|---|---|---|
+| plain | 89% / 96% | 98% / 100% |
+| at training tilt | 89% / 96% | 96% / 95% |
+| at 2x training tilt | 89% / 96% | 92% / 89% |
+
+No setting tracks both cases. The reason is structural: **you cannot measure
+robustness to a transformation you trained on.** The model is tilt-invariant
+because augmentation taught it to be, so re-tilting withheld samples asks a
+question it has been drilled on.
+
+So the shipped measure scores at the training envelope — least-bad, never wildly
+optimistic — and every place that displays it says it is a ceiling rather than a
+forecast, with the measured optimism stated. It is a held-out sample, not a
+held-out session, and emphatically not a held-out signer. No number from here
+belongs in a model card.
+
+### Also
+
+- The debug panel reports which personal model is live. A head that fails to
+  load, or loads into a slot nothing reads, produces no error and silently drops
+  the app to geometric rules — that has shipped here before.
+- The `MIN_HEAD_SAMPLES` floor of 3 stays, even though the MLP beats everything
+  at 2. Loosening a safety threshold on synthetic evidence is not a trade worth
+  taking, and one correction files three frames, so it switches on anyway.
+- Stored linear heads carry no `kind`, so absence of one keeps meaning linear
+  and existing calibrations survive the upgrade. Round-trip tested both ways.
+
+### Still open
+
+Nothing here helps a user who has not calibrated — it is a *personal* model by
+construction. A shipped generic model needs a dataset; ChicagoFSWild is the
+chosen candidate for Phase 1, and its current availability and licence terms
+must be verified before anything trains on it. Training would run in GitHub
+Actions, which is where that idea belongs.
+
+## Picking a dataset, and making the training pipeline real
+
+Two things, from "continue, make it good" after the on-device MLP landed.
+
+### FSboard, not ChicagoFSWild
+
+ChicagoFSWild was the chosen candidate. Checking its terms — which was the whole
+point of checking — disqualified it:
+
+**It has no licence.** No licence document, no data use agreement, no
+redistribution terms. The page states a purpose ("in the interest of improving
+digital interfaces for signers…") and asks for citation. A statement of purpose
+is not a grant of rights, and there is no basis in it for shipping a derived
+model in a public app.
+
+**Its signers were never asked.** The clips are scraped from YouTube, aslized.org
+and deafvideo.tv and annotated via Mechanical Turk. The page carries a notice
+inviting people who find their own videos in it to get in touch — a takedown
+mechanism, whose existence concedes the point.
+
+Either fact alone rules it out here. Together they are the exact thing ETHICS.md
+is about: a hearing-built ASL app trained on Deaf people's language taken from
+public video without asking would earn the reaction it got.
+
+**FSboard** ([arXiv:2407.15806](https://arxiv.org/abs/2407.15806)) is the
+replacement: **CC BY 4.0**, and **147 paid and consenting Deaf signers**
+recruited, shipped a phone, and compensated. Ten times larger than anything
+else. It is the rare case where the ethically right choice is also the
+technically better one.
+
+The rule this establishes, written down in `docs/DATASETS.md`: a dataset needs
+**both** a licence permitting what we intend **and** provenance the people in it
+consented to. A permissive licence on non-consensual data is still
+non-consensual data.
+
+**The catch, which is not a licence problem.** FSboard is sequence-labelled — a
+clip of a phrase, labelled with the phrase — and Phase 1's model is a per-frame
+letter classifier. There is no frame-to-letter alignment. DATASETS.md sets out
+the three ways to bridge that (CTC forced alignment, switch to a sequence model,
+or hold-detection segmentation) and recommends the first. Nothing should be
+written against FSboard until that is decided.
+
+### The training pipeline now actually runs
+
+It never had. It was written on a machine with no Python, against a dataset that
+does not exist, and its README said so: "reviewed code, not tested code — expect
+to fix small things on first run". Discovering those on the day someone finally
+has data is the worst possible time.
+
+A `training` CI job now runs both pipelines end to end on synthetic input from
+`make_smoke_data.py`: train, evaluate, export, and verify the ONNX graph against
+PyTorch. It proves the plumbing and says nothing about accuracy — the hands are
+made up, and the generator says so loudly.
+
+Writing it found two real bugs, neither of which anything would have surfaced
+until it mattered.
+
+**`build()` dropped the layer width.** `train_fingerspell.py` recorded `hidden`
+in the checkpoint; `build()` ignored it and used the constructor default. So any
+run with a non-default `--hidden` trained happily, printed its accuracy, and
+left a `model.pt` that neither `evaluate.py` nor `export_onnx.py` could open —
+`load_state_dict` fails on a size mismatch. `train_signs.py` did not record the
+width at all. Both fixed, and the smoke run deliberately trains at a
+**non-default width**, because a run at the default would pass either way.
+
+**`evaluate.py` was reporting inflated accuracy.** It looped over every signer
+under the heading "leave-one-signer-out" — but the model is trained once on a
+fixed split and never refitted per fold, so for the ~75% of signers that were in
+training, the fold was measuring training accuracy. Those folds went into
+"Overall accuracy" and the per-class table.
+
+That is the precise inflation this pipeline exists to prevent, printed by the
+script whose job is to catch it. Headline numbers now come from held-out signers
+only, read from `run.json`; training signers are still shown, labelled, and
+excluded from every total, with the gap between them called out — a large gap
+means the model learned particular people rather than the language.
+
+### Honest limits
+
+- The CI job has never run. It is written against scripts that have never
+  executed, so the first push may well fail — which is the job working.
+- `prepare_data.py`'s MediaPipe path is still uncovered: synthetic images
+  contain no hands, so there is nothing for a landmarker to find.
+- None of this puts a model in `public/models/`. The app still ships none, and
+  the smoke job fails if a synthetic one ever leaks into the tree.
+
+## Signs: 29 to 49, orientation, and a net to catch collisions
+
+### Orientation was missing, and it was capping the vocabulary
+
+A sign is handshape, location, movement, orientation, and non-manual markers.
+The recogniser read three of them. That is not a gap in polish — a whole class
+of signs is *defined* by the rotation and is otherwise identical to a sign
+already in the file. Two flat hands in contact is SCHOOL, MONEY, STOP or BOOK
+depending on almost nothing else.
+
+`HandTrack` now carries `palmTurn` and `pointTurn`, measured start to end rather
+than as a total swing: what separates these signs is which way the palm ends up
+facing, not how much it wobbled getting there. BOOK, BAD and START are built on
+it, and THANK-YOU needed it defensively — see below.
+
+Non-manual markers remain unseen. That gap is much harder and is not close.
+
+### 20 new signs, and the test that made adding them safe
+
+Hand-written rules collide as they multiply, and the failure is silent: not a
+crash, just one template quietly shadowing another, so somebody signs WAIT and
+gets WANT and nothing anywhere reports a problem.
+
+So every sign now has a canonical observation of itself
+(`tests/helpers/signCases.ts`), and the suite asserts each one wins its own.
+Written against the freshly-expanded 49, it immediately found four real
+collisions:
+
+| collision | cause | fix |
+|---|---|---|
+| HELLO ate THANK-YOU | both a flat hand near the face travelling out, and HELLO asked for strictly less | a salute goes out, not down |
+| EAT ate HOME | both flattened-O at the face; only how far off-centre separates them | the canonical HOME was not far enough onto the cheek |
+| THANK-YOU tied BAD | same hand, same chin, same direction | the palm turning over — orientation, newly available |
+| WANT tied BIG | same two claw hands, same distance, opposite directions | WANT must not be spreading |
+
+The lesson generalises: **the template that asks for the least wins**, and a new
+sign is most dangerous to the one it resembles that was written loosest.
+
+### Anything satisfied by doing nothing will fire on nothing
+
+MOTHER was written as "open hand, at your face, one hand, not moving". Every one
+of those clauses is also a true statement about a hand resting near your face,
+and it scored 0.50 there — over the rejection floor, from a hand doing nothing.
+
+MOTHER, FATHER and KNOW are taps in their citation form, so requiring the tap is
+both more correct and what makes them separable from rest at all.
+
+MY had no tap available — it is a flat hand held on the chest and nothing else —
+and scored exactly 0.50 on an idle hand at chest height, a pre-existing bug the
+old tests missed because they never checked that zone. Two changes, both
+specific to hold-only signs:
+
+- `stillness`, stricter than `held`, because a sign with no movement cannot
+  afford a forgiving definition of "stayed put". MY had been scoring 0.82 on
+  BAD — a hand that crosses two thirds of a shoulder width — on the strength of
+  where it finished.
+- `unambiguous`, which **sharpens the gate rather than adding a clause**. As a
+  clause it was averaged in with five others that a resting hand satisfies
+  perfectly, and a 0.25 diluted across seven terms moved the score not at all.
+  The gate is a ceiling, so lowering it is the only move that cannot be averaged
+  away.
+
+An idle hand is now checked in every zone, at three distances from the midline,
+and tops out at 0.25 against a floor of 0.45.
+
+### CONFUSABLE is measured now, not guessed
+
+Every pair in it comes from a sign scoring above 0.5 on another sign's canonical
+observation, and a test fails if a real near-miss goes unlisted or if the map is
+asymmetric — whoever signed it needs the other offered, whichever way round the
+recogniser got it wrong. Three asymmetries existed and are fixed.
+
+### What this still is not
+
+Idealised observations. Passing means the rules are mutually *consistent* — no
+two templates describe the same thing — and nothing about accuracy on a real
+signer, which needs recordings and a held-out-signer evaluation. It is a lower
+bound on how bad things can be, not an estimate of how good they are.
+
+## Location said properly, and 97 signs
+
+### The pipeline was throwing the face away
+
+`bodyFrame` kept the two shoulders out of MediaPipe's 33 pose landmarks and
+discarded the rest — including the nose, eyes, ears and mouth corners, which are
+returned on every frame. So "location" meant one of five horizontal bands plus
+how far off the midline the hand sat.
+
+That is not a location. WATER taps the chin, MOTHER touches the chin, DEAF runs
+ear to chin, SEE starts at the eye, THINK touches the temple — every one of them
+is "the face band, somewhere". Any two signs sharing a handshape in that band
+had nothing left to tell them apart.
+
+`HandSample.near` now carries the distance to twelve named body anchors, and
+`HandTrack.reached` the closest approach across the window — closest rather than
+average, because contact is an event and DEAF touches two places in turn.
+
+Two details that matter:
+
+- **Measured from the working end of the hand**, not the wrist: fingertips,
+  thumb, middle knuckle, whichever got closest. Which part touches varies by
+  sign, and the wrist is most of a hand-length from all of them.
+- **Falls back per anchor, not all-or-nothing.** The mouth corners drop out far
+  more often than the shoulders; losing the mouth is no reason to stop knowing
+  where the chest is. `NOMINAL_ANCHORS` is the fallback, and is also what the
+  tests are written against, so a canonical observation and a real one mean the
+  same thing by "at the chin".
+
+### Two bugs the anchors' own tests caught
+
+**The dominant-side ear was on the wrong side of the head.** `flip === -1` means
+a right-dominant signer, whose dominant-side ear is the *right* ear; the code
+picked the left. Every synthetic HandSample test in the suite passed through it
+without noticing, because they build samples directly and never go through
+`sampleFrame`. It took a test that starts from a pose.
+
+**Absolute distance bands were wider than the gap between anchors.** Head
+anchors sit about 0.2 shoulder widths apart, and the first bands were 0.14–0.38,
+so a hand at the eye was also "at" the ear. THINK, HEAR, DEAF and CRY all
+collapsed into each other.
+
+The fix is `closerTo`, which asks which of two places the hand is *nearer*. That
+is what location means phonemically — contrastive, not absolute — and a
+comparison has no band to get wrong.
+
+### 49 to 97
+
+Eight more handshapes (L, F, baby-O, X, 3, bent-V, R, 4) and the anchors made
+another 48 signs expressible. Their genuine overlaps are recorded rather than
+denied: an L is an index with a thumb, a 3 is a V with a thumb, and an occluded
+thumb is exactly what this project already knows not to trust.
+
+The collision test found five more as they went in: THINK swallowing UNDERSTAND,
+HEAR, CRY and DEAF; FINE swallowing LIKE; YES swallowing SELF and BATHROOM;
+AGAIN swallowing NIGHT and COMPUTER; THIRSTY swallowing RED. Each is the same
+shape of mistake — **the template that asks for the least wins** — and each was
+fixed by making the loose one say what it actually requires: THINK is *still*,
+FINE is *still open when it arrives*, YES is *vertical*, AGAIN comes *inward*.
+
+### Where the ceiling is
+
+At 97 signs, **55 of them have another sign scoring above 0.5 on their own
+canonical observation**. At 29 it was a handful. The space that 22 handshapes,
+12 anchors, orientation and a dozen movement patterns can separate is large, but
+it is not unlimited, and the near-miss rate is the measurement of how full it is.
+
+Going on to 150 this way would buy coverage with precision — which is the trade
+`vocabulary.ts` was written to refuse: *"150 signs at 85% is a product, 2000
+signs at 45% is a demo that wastes people's time."* 150 was always specified as
+the target for a **trained model**, and that is still the honest route to it.
+The rules are what makes the app work on day one with no dataset; they are not
+what gets it to 150.
+
+## Letters: one clause that fails should be fatal, and dwell should scale
+
+### The letter templates had never had a separability test
+
+The sign vocabulary got one and it found nine collisions. The 24 letter
+templates are the same kind of code and had never had one: the fist cluster was
+checked, because that is where the complaints came from, and the other eighteen
+letters were on trust.
+
+`tests/helpers/letterCases.ts` now holds a canonical hand per letter, and the
+suite asserts each wins its own, scores above 0.8 on itself, and lists whatever
+else fires on it.
+
+### `geomean` was making decisive failures irrelevant
+
+The header claimed a geometric mean meant "one confidently-failed predicate is
+enough to rule a letter out". With eight clauses that is arithmetically false: a
+clause failing at 0.2 among seven satisfied ones comes out at 0.2^(1/8) = 0.82 —
+over the default commit threshold. The app would write the wrong letter with no
+hesitation at all.
+
+Measured, on a canonical hand for every letter:
+
+| | scored on | before | after |
+|---|---|---|---|
+| Q | a G | 0.92 | 0.02 |
+| K | a V | 0.82 | 0.51 |
+| A | an X | 0.80 | 0.53 |
+| R | a U | 0.74 | 0.40 |
+
+Every one of those pairs differs by *exactly one predicate* — orientation, the
+thumb, one half-curled finger, whether two fingers cross — and the single
+deciding predicate was being averaged into nothing.
+
+`combine` gives the weakest clause a third of the weight on its own and the mean
+the rest. Not a plain minimum: landmarks are noisy, a real letter always has one
+clause a little short, and scoring by the worst frame would refuse to recognise
+anything. A third is decisive without being brittle. Near-miss pairs across the
+alphabet went from 40 to 8, and the eight are the fist cluster.
+
+P and Q also had orientation bands so soft they were decorative — `below(pointing,
+-0.15, 0.45)` gives a sideways G a 0.56 on Q, and pointing down is the entire
+content of both letters.
+
+### A relaxed hand was a C at 0.97
+
+`half()` peaks at exactly 0.5 extension, which is precisely what a hand at rest
+reports, so every letter built on "half-curled fingers" loves a resting hand. C
+asked only that the thumb be above 0.25 extension; a relaxed thumb reads 0.5.
+
+This is the same bug the signs mode had — a relaxed hand near the face reading
+as DRINK at 90% — and `features/handshapes.ts` had already fixed it there and
+written down why. The letter had not been told. A relaxed hand now tops out at
+0.44, under the commit threshold, and a test pins it.
+
+### Dwell now scales with the evidence
+
+A fixed dwell is the wrong shape for what a dwell does. It exists so the
+classifier's frame-to-frame flicker can average out — but a letter arriving at
+0.97 with nothing else above 0.01 has no flicker to average. The evidence
+arrived complete, and the rest of the wait is dead time paid on every letter of
+every word.
+
+At the 600ms default, fed a steady distribution at 30fps:
+
+| | scale | commits in |
+|---|---|---|
+| clean B, runner-up 0.01 | 0.49 | 297ms |
+| good L, runner-up 0.05 | 0.78 | 495ms |
+| ok W, runner-up 0.10 | 1.03 | 627ms |
+| tight T vs N, runner-up 0.22 | 1.34 | 825ms |
+
+Typical letters roughly halve; genuinely close ones get *slower*, which is the
+right answer for the case that actually goes wrong.
+
+Three constraints on it, all tested:
+
+- **It never lowers the confidence threshold.** A letter still has to clear the
+  user's bar to accumulate any dwell at all. Speed comes from letters that were
+  never in doubt, not from accepting worse evidence.
+- **High confidence in a near-tie gets no discount.** That combination is the
+  fist cluster exactly, and hurrying there is how it goes wrong, so the weaker of
+  confidence and margin governs.
+- **A caller with no distribution is unchanged.** Unknown margin means the
+  configured dwell, not "assume the worst" — reading it the other way silently
+  made every label-only caller half a second slower, which the existing tests
+  caught immediately.
+
+The settings hint now says the dial is the middle of a range rather than a fixed
+wait, because it is.
+
+## J and Z: two letters that had never been tested, and one that raced
+
+### They had no tests at all
+
+Two of the twenty-six letters, with their own detection path, and no coverage of
+any kind — "does J work" had no answer other than trying it. The static alphabet
+at least had the fist cluster checked.
+
+Writing the tests found J and Z **firing not at all** on trajectories built by
+walking their own templates. `lastFireAt` initialised to `0`, and the refractory
+period is "no motion letter within 700ms of the last one" — so a fresh detector
+claimed one had fired at time zero and refused for the first 700ms of the
+timeline.
+
+Whether that bites depends entirely on the caller's clock. With
+`performance.now()` the first frame is already thousands of milliseconds in and
+nothing is blocked, which is presumably why it was never noticed. With any clock
+starting near zero, J and Z are simply dead at the start of a session.
+`DwellCommitter.lastCommitAt` already used `-Infinity`; this now does too.
+
+### The static head was about to start eating them
+
+J is an I that moves; Z is a D that moves. While either is being drawn the
+static classifier reports that letter — correctly, and confidently, because that
+genuinely is the handshape. Detection needs a full 12-frame window, about 400ms.
+The static commit needs its dwell.
+
+Those two race, and which wins is an accident of configuration. Adaptive dwell
+made it a likelier accident: an unambiguous I now commits in about 300ms, before
+the movement has been seen at all. The user draws a J and gets an I.
+
+`MotionLetterDetector.inProgress` reports that a motion letter is under way, and
+the frame loop withholds the static letter while it is — no label and no
+distribution, the same withholding the scan-quality gate already uses, so the
+smoothing window has nothing to average either.
+
+It requires **movement**, not merely the handshape. A still I is an I and has to
+commit as one; suppressing that would be a worse bug than the one being fixed,
+and it is the first thing the tests check.
+
+### Worth noting about the tests
+
+They walk the same direction templates the detector matches against, so passing
+means the machinery works — resampling, the path floor, the handshape gate, the
+refractory period, the span normalization. It does **not** mean the templates
+describe how a real person draws a J. Nothing here can tell you that, and the
+templates remain unvalidated against a real signer.
+
+## The first CI run, and what it found
+
+`.github/workflows/ci.yml` was untracked and listed in `.git/info/exclude`, so
+nothing under `.github` had ever been committed and no job had ever run. Opening
+PR #1 ran it for the first time.
+
+**`check` passed on the first attempt** — typecheck, 662 tests, fixture sync,
+build, bundle budget.
+
+**`training` failed at `pip install`, and the reason is the best possible one:**
+
+```
+The user requested numpy==2.2.1
+mediapipe 0.10.21 depends on numpy<2
+ERROR: ResolutionImpossible
+```
+
+`training/requirements.txt` was **unsatisfiable**. Not "broke on a new release" —
+it could never have resolved, from the day it was written. Nobody following the
+README could have installed the pipeline at all, which is entirely consistent
+with the README's own note that none of it had ever been run.
+
+This is precisely the class of failure the job was built to catch, and it took
+the job's first run to catch it. Pinned to `numpy==1.26.4`, which satisfies
+mediapipe, onnx, onnxruntime, torch and pandas together.
+
+## Two copies of the same fact had drifted
+
+`LETTER_CONFUSIONS` in `wordlist.ts` widens the completion search to cover the
+letters the recogniser mixes up — and it carried the comment *"Keep this in sync
+with CONFUSION_CLUSTERS in letterTemplates.ts."*
+
+It had not been. Regenerating CONFUSION_CLUSTERS from measurement put A with E,
+M, N, O, S, T and X; this list had A with S and T. It had no entry for F or X at
+all. Every missing pair is an error the classifier makes and the completion
+layer could not recover — the opposite of what the layer is for, and exactly the
+weakness the brief says it exists to cover.
+
+It is now *derived* from CONFUSION_CLUSTERS rather than copied from it. Two
+copies of a fact drift; one cannot.
+
+### And the search never reached the end of a word
+
+`confusionVariants` spent its 24-variant budget left to right: every alternative
+for the first letter, then the second, until it ran out. With A now carrying
+seven measured confusions rather than two, the budget is gone by the fourth
+letter — so a misread near the end of a word, exactly as likely as one at the
+start, was never searched for.
+
+Round-robin now: every position gets its first alternative before any position
+gets its second. Same cost, and since alternatives are ordered likeliest-first,
+the budget goes to the likeliest error *anywhere* in the word instead of every
+error in its opening.

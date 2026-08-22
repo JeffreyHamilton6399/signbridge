@@ -8,9 +8,9 @@
  *
  * Everything here is a ratio or an angle. Nothing depends on pixels.
  */
-import type { Finger, Point3 } from '@/vision/types';
+import type { Finger, HandFrame, Point3 } from '@/vision/types';
 import { FINGERS, FINGER_CHAIN, HAND_LANDMARK } from '@/vision/types';
-import { dist } from './normalize';
+import { dist, normalizeHand } from './normalize';
 
 export interface FingerState {
   /** 0 = fully curled into the palm, 1 = fully straight. */
@@ -45,14 +45,17 @@ export interface HandGeometry {
    * Where the thumb tip sits along the knuckle line: 0 at the index knuckle,
    * 1 at the pinky knuckle, negative out past the index on the radial side.
    *
-   * This is the feature that separates the fist letters, and it is purely 2D on
-   * purpose. A, T, N and M are all closed fists distinguished only by where the
-   * thumb is, and the obvious way to measure that — depth relative to the palm
-   * plane — leans on MediaPipe's z, which is its least reliable channel and is
-   * worst exactly when the thumb is tucked out of sight. Position across the
-   * knuckles survives that: the thumb tip of an A sits beside the index knuckle,
-   * a T pokes out between index and middle, an N between middle and ring, an M
-   * beyond the ring.
+   * This is the feature that separates the fist letters. A, T, N and M are all
+   * closed fists distinguished only by where the thumb is, and the obvious way
+   * to measure that — depth relative to the palm plane — is the least robust
+   * one, because it is dominated by the z channel exactly when the thumb is
+   * tucked out of sight. Position *along the knuckles* survives that: the thumb
+   * tip of an A sits beside the index knuckle, a T pokes out between index and
+   * middle, an N between middle and ring, an M beyond the ring.
+   *
+   * Fed world landmarks (see {@link geometryOf}) this is a projection onto the
+   * real knuckle line rather than its image shadow, so it no longer shrinks
+   * when the signer angles their hand toward the camera.
    */
   thumbAcross: number;
   /**
@@ -61,6 +64,65 @@ export interface HandGeometry {
    * tucked thumb pokes through at or below the knuckles.
    */
   thumbAlong: number;
+  /**
+   * Where each finger's bend actually is: 0 = all of it beyond the knuckle,
+   * 1 = all of it at the knuckle. Index, middle, ring, pinky.
+   *
+   * This is the fist cluster's only thumb-independent signal, and the reason it
+   * exists is that every other approach to A/S/T/N/M asks about a thumb that is
+   * underneath the fingers and therefore not being measured at all — MediaPipe
+   * infers one, and its inference is pulled toward the commonest fist, an A.
+   *
+   * The fingers, though, are in plain view, and they are doing different things
+   * in each letter:
+   *
+   *   E     fingertips reach down to meet a folded thumb, so the knuckles stay
+   *         relatively open and the bend piles up in the middle and end joints.
+   *         Low.
+   *   A, S  a real fist: every joint contributes about equally. Middle.
+   *   T,N,M the covering fingers lie *over* the thumb, which props them up.
+   *         They fold sharply at the knuckle and stay comparatively straight
+   *         past it. High — and only for the fingers actually covering the
+   *         thumb, which is one in T, two in N, three in M.
+   *
+   * HONEST CAVEAT: this is reasoned from how the letters are formed, not
+   * measured from signers. It is used as a nudge and never as a veto, so if the
+   * reasoning is wrong the templates degrade rather than break. Validating it
+   * against real recordings is the obvious next step, and until that happens
+   * personalization remains the thing that actually fixes this cluster.
+   */
+  knuckleBend: [number, number, number, number];
+  /** Mean of {@link knuckleBend} over index, middle and ring. */
+  curlBalance: number;
+  /**
+   * How far the index/middle/ring fingertips are held off the palm plane, in
+   * hand spans. Mean of the three, perpendicular distance, sign discarded.
+   *
+   * This is the second thumb-independent signal, and unlike {@link knuckleBend}
+   * it is a distance rather than a ratio, so the two fail differently. Both the
+   * fingertips and the three palm points it is measured against are in plain
+   * view in every fist letter, which is the whole point: it says where the
+   * thumb is by measuring the fingers resting on top of it.
+   *
+   *   A, S  a true fist — the fingertips press into the palm. Low.
+   *   E     tips fold down onto a thumb lying across the palm. High.
+   *   T,N,M tips lie over a thumb tucked underneath them. High.
+   *
+   * Paired with {@link drapedCount} it separates the cluster in two dimensions:
+   * A and S are low-lift and undraped, E is high-lift and undraped, and T, N
+   * and M are high-lift with one, two and three fingers draped.
+   *
+   * HONEST CAVEAT: the bands are reasoned from how the letters are formed, not
+   * measured from signers — same caveat as {@link knuckleBend}, and the debug
+   * panel now reports both live so it can be checked against a real hand.
+   */
+  tipLift: number;
+  /**
+   * Soft count of index/middle/ring lying over the thumb: ~1 in T, ~2 in N,
+   * ~3 in M, ~0 in A, S and E. Derived from {@link knuckleBend}, so it says
+   * nothing about the thumb itself — which is exactly the point.
+   */
+  drapedCount: number;
   /** Overall hand direction: unit vector wrist -> middle MCP, canonical space. */
   axis: Point3;
   /**
@@ -126,6 +188,36 @@ function chainStraightness(pts: Point3[], chain: readonly [number, number, numbe
 }
 
 /**
+ * Band over which a finger counts as lying over the thumb rather than curled
+ * into a fist. Wide on purpose — see the caveat on {@link HandGeometry.knuckleBend}.
+ */
+const DRAPE_LO = 0.4;
+const DRAPE_HI = 0.58;
+
+/** Below this much total bend the hand is open and the ratio means nothing. */
+const MIN_TOTAL_BEND = 0.6;
+
+/**
+ * What fraction of a finger's total bend happens at the knuckle.
+ *
+ * Returns 0.5 — deliberately neutral, not 0 — for a finger that is not bent at
+ * all, because the ratio is 0/0 there and any other answer would let an open
+ * hand vote on a question only a closed one can answer.
+ */
+function bendAtKnuckle(
+  pts: Point3[],
+  chain: readonly [number, number, number, number],
+  wrist: Point3,
+): number {
+  const [mcp, pip, dip, tip] = chain;
+  const knuckle = angleBetween(sub(pts[mcp], wrist), sub(pts[pip], pts[mcp]));
+  const middle = angleBetween(sub(pts[pip], pts[mcp]), sub(pts[dip], pts[pip]));
+  const end = angleBetween(sub(pts[dip], pts[pip]), sub(pts[tip], pts[dip]));
+  const total = knuckle + middle + end;
+  return total < MIN_TOTAL_BEND ? 0.5 : knuckle / total;
+}
+
+/**
  * Compute the full geometry descriptor.
  *
  * @param normalized  landmarks already passed through normalizeHand()
@@ -176,6 +268,15 @@ export function handGeometry(normalized: Point3[], rawImage?: Point3[] | null): 
     cross(sub(normalized[L.INDEX_MCP], normalized[L.WRIST]), sub(normalized[L.PINKY_MCP], normalized[L.WRIST])),
   );
 
+  // How far the covering fingers are held off the palm. Perpendicular offset
+  // from the palm plane, so it measures clearance rather than how far across
+  // the palm the tip has travelled.
+  const liftOf = (f: Finger) => {
+    const d = sub(fingers[f].tip, palmCentre);
+    return Math.abs(d.x * palmNormal.x + d.y * palmNormal.y + d.z * palmNormal.z);
+  };
+  const tipLift = (liftOf('index') + liftOf('middle') + liftOf('ring')) / 3;
+
   // Absolute pointing direction, from the pre-rotation landmarks. Image y grows
   // downward, so an upward-pointing hand has a negative dy.
   let pointing = 1;
@@ -191,6 +292,18 @@ export function handGeometry(normalized: Point3[], rawImage?: Point3[] | null): 
     fingers.ring.extension,
     fingers.pinky.extension,
   ];
+
+  const knuckleBend = (['index', 'middle', 'ring', 'pinky'] as const).map((f) =>
+    bendAtKnuckle(normalized, FINGER_CHAIN[f], normalized[L.WRIST]),
+  ) as [number, number, number, number];
+  // Pinky is excluded: it is the one finger never over the thumb in M, and it
+  // curls along with the others in A and S, so it only adds noise to the axis
+  // these three are separated on.
+  const curlBalance = (knuckleBend[0] + knuckleBend[1] + knuckleBend[2]) / 3;
+  const drapedCount =
+    ramp(knuckleBend[0], DRAPE_LO, DRAPE_HI) +
+    ramp(knuckleBend[1], DRAPE_LO, DRAPE_HI) +
+    ramp(knuckleBend[2], DRAPE_LO, DRAPE_HI);
 
   // R is index and middle crossed. In canonical right-hand space the index sits
   // at negative x relative to the middle; when crossed that order flips while
@@ -222,10 +335,48 @@ export function handGeometry(normalized: Point3[], rawImage?: Point3[] | null): 
       (tipOf('thumb').z - palmCentre.z) * palmNormal.z,
     thumbAcross,
     thumbAlong: tipOf('thumb').y,
+    knuckleBend,
+    curlBalance,
+    tipLift,
+    drapedCount,
     axis: norm(sub(normalized[L.MIDDLE_MCP], normalized[L.WRIST])),
     pointing,
     indexMiddleCrossed,
     palmFacing: -palmNormal.z,
     fistness: 1 - (four[0] + four[1] + four[2] + four[3]) / 4,
   };
+}
+
+/**
+ * Geometry for one tracked hand — the entry point every caller should use.
+ *
+ * There is one decision here and it is worth stating plainly: **shape comes
+ * from world landmarks when MediaPipe provides them, orientation always comes
+ * from the image.**
+ *
+ * Image-space landmarks are a projection. A finger pointing at the camera is
+ * foreshortened in x and y, and the z channel that would recover its true
+ * length is a weakly-supervised offset in image units, not a measurement. The
+ * practical result is that an extended finger aimed at the lens reads as a
+ * curled one — which is why D, L, G and the pointing letters degrade the moment
+ * the signer turns their hand. World landmarks are metric and hand-centred, so
+ * chain straightness, fingertip gaps and thumb position all survive rotation.
+ *
+ * What world space cannot tell us is which way the hand points *in the frame*,
+ * because it discards the camera entirely — and P/Q/G/H are distinguished by
+ * exactly that. So `pointing` keeps coming from the raw image landmarks.
+ *
+ * Falls back to image space when `world` is absent, which keeps hand-built test
+ * frames and recorded fixtures working unchanged.
+ */
+export function geometryOf(hand: HandFrame, aspect = 1): HandGeometry {
+  const unrotatedImage = normalizeHand(hand.landmarks, hand.handedness, {
+    aspect,
+    canonicalRotation: false,
+  });
+  // World coordinates are already isotropic, so they need no aspect correction.
+  const shape = hand.world
+    ? normalizeHand(hand.world, hand.handedness, { aspect: 1 })
+    : normalizeHand(hand.landmarks, hand.handedness, { aspect });
+  return handGeometry(shape, unrotatedImage);
 }

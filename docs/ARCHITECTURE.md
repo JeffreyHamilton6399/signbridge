@@ -24,8 +24,14 @@ camera stream (MediaStream, main thread)
    │  createImageBitmap(video)         transferable, zero-copy
    ▼
 Web Worker  ── MediaPipe HandLandmarker (+ PoseLandmarker when needed)
-   │            drops frames under load, never queues them
-   │  21 points × 2 hands · 33 pose points
+   │            never asked for a frame while it is busy
+   │  21 image points + 21 world points × 2 hands · 33 pose points
+   ▼
+tracking.ts    match hands to the previous frame by wrist position
+   │           stable id · handedness as an accumulated verdict
+   ▼
+smoothing.ts   1€ filter per landmark channel, keyed on that id
+   │           still hand → filtered hard · moving hand → barely filtered
    ▼
 normalize.ts   aspect-correct → mirror left→right → wrist to origin
    │           → scale by hand span → rotate to canonical roll
@@ -57,9 +63,29 @@ debug panel; the CI latency benchmark fails the build above a p95 of 200 ms.
   landmark frames the browser actually decoded. Firefox falls back to `rAF`.
 - Landmark extraction runs in a worker. It is 8–20 ms of work; on the main
   thread it visibly janks both the video element and the commit animation.
-- **Frames are dropped, never queued.** If the worker is busy the incoming
-  `ImageBitmap` is closed and discarded. A queue would produce captions that lag
+- **Frames are dropped, never queued** — and better, never taken in the first
+  place. The main thread tracks whether a frame is outstanding and skips the
+  `createImageBitmap` entirely while the worker is busy, because that call is a
+  GPU copy and a synchronisation point whose result would only be discarded. The
+  worker still drops a frame that arrives while it is busy, but that is now a
+  backstop rather than the mechanism. A queue would produce captions that lag
   reality, which is worse than missing a frame nobody would have noticed.
+- **Capture is not throttled below what the worker can sustain.** The in-flight
+  guard is exact backpressure, so guessing a sustainable frame rate on top of it
+  only widens the gap between hand and caption. The inline path is the
+  exception: there inference costs main-thread time, so it keeps both a 20 fps
+  ceiling and a cost-based backoff.
+- **Landmarks are filtered before anything reads them** (`features/smoothing.ts`).
+  Tracker jitter reads to a person as lag, because a skeleton shivering around
+  the hand looks like it is chasing it — and it costs accuracy too, since every
+  geometric feature is a ratio of small distances and a jittering fingertip
+  flickers the classifier between neighbouring letters. A moving average would
+  trade that jitter for real lag; the 1€ filter raises its cutoff with measured
+  speed instead, so a still hand is filtered hard and a moving one barely at all.
+- **The overlay predicts from capture time, not arrival time.** Those differ by
+  the whole inference and transfer cost — precisely the lag being corrected for
+  — so measuring from arrival leaves the skeleton one inference behind the hand
+  however high the frame rate goes.
 - Per-frame work on the main thread is deliberately tiny: normalization plus a
   24-template scoring pass, microseconds in total. React state is written only
   when something the user can see changes.
@@ -93,6 +119,54 @@ Order matters:
 For sign-level features the hand *position* is kept separately, relative to the
 shoulders, because location on and around the torso is phonemic: the same
 handshape at the chin and at the chest are different signs.
+
+### Two coordinate spaces, on purpose
+
+MediaPipe returns each hand twice: image-normalized landmarks, and *world*
+landmarks — metric, hand-centred, no perspective. `features/handGeometry.ts`
+exposes one entry point, `geometryOf()`, which resolves the split:
+
+- **Handshape comes from world coordinates.** Image landmarks are a projection,
+  so a finger aimed at the lens is foreshortened and reads as curled; the z
+  channel that would recover its length is a weakly-supervised offset in image
+  units, not a measurement. This is why the pointing letters used to fall apart
+  the moment a hand turned off-axis.
+- **Orientation comes from the image.** World space discards the camera
+  entirely, and P/Q/G/H differ by nothing else but which way the hand points in
+  the frame.
+- **The 63-float feature vector stays in image space.** It is what every stored
+  calibration sample, every custom sign prototype and `training/normalize.py`
+  are expressed in. Moving it would silently invalidate work users have already
+  done, so only the *rules* read world coordinates.
+
+`geometryOf()` falls back to image space when world landmarks are absent, which
+keeps recorded fixtures and hand-built test frames working unchanged. The debug
+panel reports which space is live.
+
+## Hand identity
+
+MediaPipe reports each frame independently: it does not promise that hand 0 this
+frame is hand 0 last frame, nor that its Left/Right label is the same. Both
+change in practice. `vision/tracking.ts` assigns a stable `id` by matching
+wrists to the previous frame, and reports handedness as an accumulated verdict
+rather than this frame's guess.
+
+**Anything holding per-hand state across time must key on `id`** — the 1€ filter,
+the overlay's velocity estimate, the scan-quality speed tracker all do. Keying
+on the handedness label means discarding that state every time a label flips.
+
+## Refusing to guess
+
+`features/scanQuality.ts` measures the *input*: hand span against frame height,
+landmarks outside the frame, wrist speed in hand spans per second, how edge-on
+the palm is. It never reads the classifier's output — a check that consults the
+answer it is checking is not a check.
+
+When the view is unusable, fingerspelling feeds the committer a null label:
+nothing commits, no auto-space fires (the hand is up, it just cannot be read),
+and the framing guide says why. **This path can only withhold.** Nothing in it
+raises a confidence or forces a commit, and `tests/scanQuality.test.ts` pins
+that.
 
 ## Repository layout
 

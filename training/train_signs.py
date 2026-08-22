@@ -53,6 +53,7 @@ def main() -> None:
     parser.add_argument("--data", required=True, type=Path)
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--arch", choices=["gru", "transformer"], default="gru")
+    parser.add_argument("--hidden", type=int, default=None, help="GRU width; default is the architecture default")
     parser.add_argument("--epochs", type=int, default=80)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--lr", type=float, default=1e-3)
@@ -90,7 +91,9 @@ def main() -> None:
     print(f"train {len(train_idx)} · test {len(test_idx)} · held-out signers {held_out}")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = build(args.arch, len(labels), X.shape[2], frames=X.shape[1]).to(device)
+    model = build(
+        args.arch, len(labels), X.shape[2], frames=X.shape[1], hidden=args.hidden
+    ).to(device)
 
     train_ds = TensorDataset(
         torch.from_numpy(augment(X[train_idx], rng)), torch.from_numpy(y[train_idx])
@@ -137,6 +140,9 @@ def main() -> None:
                     "input_dim": X.shape[2],
                     "frames": X.shape[1],
                     "arch": args.arch,
+                    # Recorded so evaluate.py and export_onnx.py can rebuild
+                    # this exact shape. Omitting it made runs unloadable.
+                    "hidden": args.hidden,
                 },
                 args.out / "model.pt",
             )

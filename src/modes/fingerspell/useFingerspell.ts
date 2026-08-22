@@ -16,10 +16,15 @@ import { FingerspellClassifier } from './classifier';
 import { DwellCommitter } from './debouncer';
 import { MotionLetterDetector } from './motion';
 import { Autocomplete } from './autocomplete';
-import { buildPrototypes, asLetterModel, trainLinearHead } from './calibration';
+import { FIST_CLUSTER } from './letterTemplates';
+import { buildPrototypes } from './calibration';
+import { fitPersonalHead, isMlpHead } from './mlpHead';
+import type { FittedHead } from './mlpHead';
 import type { CalibrationSample } from './calibration';
 import { loadCalibration, loadUserWords, saveUserWords, saveCalibration } from '@/db/idb';
 import { handCentroid, handSpan } from '@/features/normalize';
+import { assessScan, GOOD_SCAN, ScanQualityTracker } from '@/features/scanQuality';
+import type { ScanQuality } from '@/features/scanQuality';
 import { speak, speakLetter, inferPunctuation } from '@/speech/tts';
 import type { HandFrame } from '@/vision/types';
 
@@ -30,8 +35,33 @@ export interface FingerspellApi {
   reloadCalibration(): Promise<void>;
   /** Latest calibration samples, for the debug panel's accuracy report. */
   samples: readonly CalibrationSample[];
+  /**
+   * The personal model currently classifying, for the debug panel.
+   *
+   * Worth surfacing because the way this goes wrong is silent: a head that
+   * fails to load, or loads and is never consulted, produces no error anywhere
+   * — it just quietly leaves the app running on geometric rules. That exact bug
+   * shipped once already. A line saying which model is live makes it a
+   * ten-second check instead of an investigation.
+   */
+  personalModel: { kind: 'mlp' | 'linear'; letters: number; holdout: number | null } | null;
   /** Set briefly after a correction is folded into the personal model. */
   taught: { letter: string; samples: number } | null;
+  /**
+   * How many times this session the user has corrected a letter to one of the
+   * six fists. They are the cluster the geometric rules cannot separate — the
+   * thumb that distinguishes them is underneath the fingers — so a run of these
+   * is the app finding out that its generic reasoning does not fit this hand.
+   * Calibrating the six takes about ninety seconds and is the actual fix, so
+   * the count is surfaced to offer it here rather than leaving it in settings
+   * for someone to go looking for.
+   */
+  fistCorrections: number;
+  /**
+   * How good a look the camera is getting, and what to do about it. Drives the
+   * live hint over the video and gates commits when the input is unusable.
+   */
+  scan: ScanQuality;
 }
 
 export function useFingerspell(enabled: boolean): FingerspellApi {
@@ -42,11 +72,40 @@ export function useFingerspell(enabled: boolean): FingerspellApi {
   const classifier = useMemo(() => new FingerspellClassifier(), []);
   const committer = useMemo(() => new DwellCommitter(), []);
   const motion = useMemo(() => new MotionLetterDetector(), []);
+  const scanTracker = useMemo(() => new ScanQualityTracker(), []);
   const autocompleteRef = useRef<Autocomplete>(new Autocomplete());
   const samplesRef = useRef<CalibrationSample[]>([]);
-  /** Features of the most recent committed letter, for teaching from a fix. */
-  const lastFeaturesRef = useRef<Float32Array | null>(null);
+  /**
+   * Recent per-frame feature vectors, newest last.
+   *
+   * Long enough to cover the longest dwell setting at a low frame rate, so the
+   * whole hold that produced a letter is still in here when it commits.
+   */
+  const recentRef = useRef<Float32Array[]>([]);
+  /**
+   * Features of the frames that actually produced the last committed letter.
+   *
+   * This used to be a single ref overwritten every frame, which meant a
+   * correction filed whatever the hand happened to be doing *when the user
+   * tapped* — typically a second or two later, halfway into the next letter or
+   * on the way back down to rest. So the mechanism billed as the real fix for
+   * the fist cluster was quietly training on mislabelled samples, which is
+   * worse than training on nothing: it drags the prototype for the corrected
+   * letter toward a pose that is not that letter.
+   */
+  const committedFeaturesRef = useRef<Float32Array[]>([]);
   const [taught, setTaught] = useState<{ letter: string; samples: number } | null>(null);
+  const [fistCorrections, setFistCorrections] = useState(0);
+  const [personalModel, setPersonalModel] = useState<FingerspellApi['personalModel']>(null);
+  const [scan, setScanState] = useState<ScanQuality>(GOOD_SCAN);
+  // Written every frame, read only when it changes: a hint that re-rendered at
+  // 30fps would cost more than it is worth.
+  const scanRef = useRef<ScanQuality>(GOOD_SCAN);
+  const setScan = useCallback((next: ScanQuality) => {
+    if (next.problem === scanRef.current.problem) return;
+    scanRef.current = next;
+    setScanState(next);
+  }, []);
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
 
@@ -67,18 +126,35 @@ export function useFingerspell(enabled: boolean): FingerspellApi {
     settings.recognition.smoothingWindow,
   ]);
 
+  /** Install a freshly fitted or freshly loaded head, and report what it is. */
+  const installHead = useCallback(
+    (head: FittedHead | null) => {
+      classifier.setLocalHead(head);
+      setPersonalModel(
+        head
+          ? {
+              kind: isMlpHead(head) ? 'mlp' : 'linear',
+              letters: head.labels.length,
+              holdout: isMlpHead(head) ? head.holdoutAccuracy : null,
+            }
+          : null,
+      );
+    },
+    [classifier],
+  );
+
   const reloadCalibration = useCallback(async () => {
     const stored = await loadCalibration();
     if (!stored) {
       classifier.setPrototypes(null);
-      classifier.setOnnxModel(null);
+      installHead(null);
       samplesRef.current = [];
       return;
     }
     samplesRef.current = stored.samples;
     classifier.setPrototypes(buildPrototypes(stored.samples));
-    classifier.setOnnxModel(stored.head ? asLetterModel(stored.head) : null);
-  }, [classifier]);
+    installHead(stored.head ?? null);
+  }, [classifier, installHead]);
 
   useEffect(() => {
     void reloadCalibration();
@@ -136,6 +212,11 @@ export function useFingerspell(enabled: boolean): FingerspellApi {
 
       const hand = pickHand(frame.hands, recognition.dominantHand);
       if (!hand) {
+        scanTracker.update(undefined, frame.t);
+        setScan(assessScan({ hand: undefined, frame, speed: 0, palmFacing: 0 }));
+        // Nothing to remember. Keeping the old frames would let the next
+        // letter's commit snapshot a hold that belonged to the previous one.
+        recentRef.current = [];
         const event = committer.feed({ label: null, confidence: 0, t: frame.t });
         if (event.type === 'space') commitWordAndLearn();
         state.setTentative(null);
@@ -144,7 +225,44 @@ export function useFingerspell(enabled: boolean): FingerspellApi {
       }
 
       const prediction = classifier.predict(hand, aspect);
-      lastFeaturesRef.current = prediction.features;
+
+      /**
+       * Is the camera getting a good enough look for a letter to mean anything?
+       *
+       * The classifier will happily label a hand that is half out of frame or
+       * ten feet away, because it never sees the frame — only 63 numbers, which
+       * are just as confidently wrong as they are confidently right. When the
+       * input is that poor the honest move is to stop producing letters and say
+       * why, so the loop below feeds the committer a null label rather than a
+       * guess. It never works the other way: nothing here can raise a
+       * confidence or force a commit.
+       */
+      const scan = assessScan({
+        hand,
+        frame,
+        speed: scanTracker.update(hand, frame.t),
+        palmFacing: prediction.geometry.palmFacing,
+      });
+      setScan(scan);
+
+      // Only frames the camera got a real look at are worth remembering: a
+      // correction files these as training data, and a hand half out of shot
+      // is not an example of any letter.
+      recentRef.current.push(prediction.features);
+      if (recentRef.current.length > RECENT_FRAMES) recentRef.current.shift();
+
+      if (scan.unusable) {
+        // Withhold. The hand is still there, so no auto-space — it has not been
+        // put down, we just cannot read it — but nothing gets committed and the
+        // motion buffer is dropped rather than accumulating a trajectory built
+        // from landmarks half of which are extrapolated off the frame edge.
+        committer.feed({ label: null, confidence: 0, handY: handCentroid(hand.landmarks).y, t: frame.t });
+        recentRef.current.pop();
+        motion.reset();
+        state.setTentative(null);
+        state.setAlternates([], {});
+        return;
+      }
 
       // Motion letters run alongside the static head and pre-empt it, because a
       // J held still is an I and would otherwise commit as one.
@@ -159,11 +277,31 @@ export function useFingerspell(enabled: boolean): FingerspellApi {
       }
 
       state.setAlternates(prediction.alternates, prediction.distribution);
+      // What the fist cluster is actually being decided on, for the debug
+      // panel. Two of these three read the fingers and one reads a thumb that
+      // may not be visible — see SessionState.fistEvidence.
+      state.setFistEvidence({
+        drapedCount: prediction.geometry.drapedCount,
+        tipLift: prediction.geometry.tipLift,
+        thumbAcross: prediction.geometry.thumbAcross,
+      });
 
       const centroid = handCentroid(hand.landmarks);
+      // A J is an I that moves and a Z is a D that moves, so while either is
+      // being drawn the static classifier is reporting that letter — correctly,
+      // and confidently, because that is genuinely the handshape. Detection
+      // needs a full motion window; the static commit needs its dwell. Left to
+      // race, a J arrives as an I. Withhold until the movement resolves, the
+      // same way an unreadable frame is withheld: no label and no distribution,
+      // so the smoothing window has nothing to average either.
+      const drawing = motion.inProgress(prediction.distribution);
       const event = committer.feed({
-        label: prediction.label,
-        confidence: prediction.confidence,
+        label: drawing ? null : prediction.label,
+        confidence: drawing ? 0 : prediction.confidence,
+        // Hand the committer the whole distribution, not just the winner: it
+        // averages across the smoothing window instead of voting, which is what
+        // keeps the near-tie letters from flickering. See debouncer.ts.
+        distribution: drawing ? undefined : prediction.distribution,
         handY: centroid.y,
         t: frame.t,
       });
@@ -177,6 +315,10 @@ export function useFingerspell(enabled: boolean): FingerspellApi {
           });
           break;
         case 'commit':
+          // Freeze the hold that produced this letter, before the hand moves
+          // on. If the user corrects it, these are the frames that get the new
+          // label — the ones that were actually the letter they signed.
+          committedFeaturesRef.current = spread(recentRef.current, TEACH_SAMPLES);
           state.appendLetter(event.label, event.confidence);
           speakOut(event.label, event.confidence, true);
           buzz(accessibility.hapticOnCommit);
@@ -238,30 +380,44 @@ export function useFingerspell(enabled: boolean): FingerspellApi {
       state.appendLetter(letter, 1);
       committer.reset();
 
-      const features = lastFeaturesRef.current;
-      if (!features) return;
+      // Counted before the capture check below: the user corrected a fist
+      // letter whether or not there were frames worth learning from, and it is
+      // the correction that says the rules are not fitting this hand.
+      if (FIST_CLUSTER.includes(letter as (typeof FIST_CLUSTER)[number])) {
+        setFistCorrections((n) => n + 1);
+      }
 
-      const sample: CalibrationSample = {
-        label: letter,
-        features: Float32Array.from(features),
-        t: Date.now(),
-      };
-      const samples = [...samplesRef.current, sample];
+      const captured = committedFeaturesRef.current;
+      if (captured.length === 0) return;
+      // Spent: one hold teaches once. Tapping a second alternate corrects the
+      // correction, and filing the same frames under two different letters
+      // would teach the model that they are both.
+      committedFeaturesRef.current = [];
+
+      const now = Date.now();
+      const samples = [
+        ...samplesRef.current,
+        ...captured.map<CalibrationSample>((features) => ({
+          label: letter,
+          features: Float32Array.from(features),
+          t: now,
+        })),
+      ];
       samplesRef.current = samples;
 
       // Prototypes are a mean, so they update instantly and shift the decision
-      // straight away. The linear head is a fit and can wait for the next
-      // frame's idle moment.
+      // straight away. The MLP is a fit — a few hundred milliseconds — and can
+      // wait for the next idle moment rather than stalling the frame loop.
       classifier.setPrototypes(buildPrototypes(samples));
       setTaught({ letter, samples: samples.filter((s) => s.label === letter).length });
 
       void (async () => {
-        const head = samples.length >= 8 ? trainLinearHead(samples, { epochs: 150 }) : null;
-        if (head) classifier.setOnnxModel(asLetterModel(head));
+        const head = fitPersonalHead(samples);
+        if (head) installHead(head);
         await saveCalibration(samples, head);
       })();
     },
-    [session, committer, classifier],
+    [session, committer, classifier, installHead],
   );
 
   useEffect(() => {
@@ -281,8 +437,37 @@ export function useFingerspell(enabled: boolean): FingerspellApi {
     commitSpace,
     reloadCalibration,
     taught,
+    fistCorrections,
+    personalModel,
+    scan,
     samples: samplesRef.current,
   };
+}
+
+/**
+ * Frames of feature history kept. 1500ms is the longest dwell the settings
+ * allow; at 30fps that is 45 frames, and a little headroom costs 63 floats each.
+ */
+const RECENT_FRAMES = 50;
+
+/**
+ * Samples filed per correction.
+ *
+ * More than one, because a hold lasts hundreds of milliseconds and every frame
+ * of it is an example of the letter the user actually signed. Not all of them:
+ * consecutive frames of a held hand are nearly identical, and forty copies of
+ * one pose would swamp a calibration set collected properly.
+ */
+const TEACH_SAMPLES = 3;
+
+/** Evenly spaced picks from a list, oldest first. Returns fewer if it must. */
+export function spread<T>(items: readonly T[], count: number): T[] {
+  if (items.length <= count) return [...items];
+  const out: T[] = [];
+  for (let i = 0; i < count; i++) {
+    out.push(items[Math.round((i * (items.length - 1)) / (count - 1))]);
+  }
+  return out;
 }
 
 /** Choose which hand to read, honouring the dominant-hand preference. */

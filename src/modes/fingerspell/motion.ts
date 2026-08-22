@@ -30,6 +30,17 @@ export const MOTION_WINDOW = 12;
 const MIN_PATH = 0.9;
 /** Number of points every trajectory is resampled to before matching. */
 const RESAMPLE = 9;
+/** How much of the handshape's probability is needed before motion is considered. */
+const SHAPE_GATE = 0.25;
+/**
+ * Fraction of the full path that counts as 'a movement has started'.
+ *
+ * Only used by {@link MotionLetterDetector.inProgress}, to withhold the static
+ * letter while a motion letter is under way. Low enough to catch the movement
+ * before an unambiguous I could commit, high enough that a hand holding still
+ * is never mistaken for one starting to move.
+ */
+const ONSET = 0.35;
 
 type Dir = readonly [number, number];
 
@@ -118,7 +129,18 @@ export function pathLength(points: TrajectoryPoint[]): number {
 export class MotionLetterDetector {
   private pinky: TrajectoryPoint[] = [];
   private index: TrajectoryPoint[] = [];
-  private lastFireAt = 0;
+  /**
+   * When a motion letter last fired.
+   *
+   * -Infinity, not 0: a fresh detector has never fired, and initialising it to
+   * zero says one fired at time zero. Whether that matters depends entirely on
+   * what the caller uses for timestamps — with performance.now() the first
+   * frame is already thousands of milliseconds in and nothing is blocked, but
+   * with a clock that starts near zero it silently disables J and Z for the
+   * first 700ms of the session. DwellCommitter.lastCommitAt already had this
+   * right.
+   */
+  private lastFireAt = -Infinity;
 
   /** Push one frame. `span` is the hand span in the same units as x/y. */
   push(landmarks: Point3[], span: number, t: number): void {
@@ -134,6 +156,32 @@ export class MotionLetterDetector {
   reset(): void {
     this.pinky = [];
     this.index = [];
+  }
+
+  /**
+   * Is a motion letter being drawn right now?
+   *
+   * J is an I that moves and Z is a D that moves, so while either is being
+   * drawn the static classifier is reporting I or D — correctly, and with high
+   * confidence, because that genuinely is the handshape. Left alone it commits
+   * that letter, and the J the user was in the middle of drawing arrives as
+   * "IJ" or never arrives at all.
+   *
+   * The two paths race. Detection needs a full {@link MOTION_WINDOW} of frames,
+   * about 400ms at 30fps, and the static commit needs its dwell — so which one
+   * wins is an accident of configuration. It became a likelier accident when
+   * dwell started scaling with confidence: an unambiguous I now commits in
+   * roughly 300ms, comfortably before the movement has been seen.
+   *
+   * So the caller withholds the static letter while this is true. It requires
+   * *movement*, not merely the handshape: a still I is an I and must commit as
+   * one, or the letter becomes unspellable.
+   */
+  inProgress(staticDistribution: Record<string, number>): boolean {
+    const jShape = staticDistribution['I'] ?? 0;
+    const zShape = Math.max(staticDistribution['D'] ?? 0, staticDistribution['X'] ?? 0);
+    if (jShape > SHAPE_GATE && pathLength(this.pinky) > MIN_PATH * ONSET) return true;
+    return zShape > SHAPE_GATE && pathLength(this.index) > MIN_PATH * 1.4 * ONSET;
   }
 
   /**
@@ -154,13 +202,13 @@ export class MotionLetterDetector {
 
     let best: MotionMatch | null = null;
 
-    if (jShape > 0.25 && jPath > MIN_PATH) {
+    if (jShape > SHAPE_GATE && jPath > MIN_PATH) {
       const score = matchScore(directions(resample(this.pinky, RESAMPLE)), J_TEMPLATE);
       const confidence = score * Math.min(1, jShape * 2);
       if (confidence > 0.55) best = { letter: 'J', confidence };
     }
 
-    if (zShape > 0.25 && zPath > MIN_PATH * 1.4) {
+    if (zShape > SHAPE_GATE && zPath > MIN_PATH * 1.4) {
       const score = matchScore(directions(resample(this.index, RESAMPLE)), Z_TEMPLATE);
       const confidence = score * Math.min(1, zShape * 2);
       if (confidence > 0.55 && (!best || confidence > best.confidence)) {

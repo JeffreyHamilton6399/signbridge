@@ -15,10 +15,19 @@
  *
  * MediaPipe does not *measure* a hidden thumb, it infers one, and its inference
  * is drawn toward the commonest fist — which is an A. That is why a T or an M
- * reads as an A: the landmarks handed to these rules already say A. The fist
- * letters are therefore keyed on thumbAcross, a purely 2D measure of where the
- * thumb tip sits along the knuckle line, which degrades more gracefully than
- * anything using z. It is still inference, not measurement.
+ * reads as an A: the landmarks handed to these rules already say A.
+ *
+ * So the fist letters are decided on the fingers, which the camera can see, and
+ * the thumb only refines. drapedCount says how many fingers lie over the thumb
+ * (one in T, two in N, three in M, none in A, S and E) and tipLift says whether
+ * the fingertips reach the palm or rest on a thumb. A, S and E keep full-weight
+ * thumb predicates because in those three the thumb is genuinely in view; T, N
+ * and M's are priors — see tuckedNear.
+ *
+ * The two finger features are reasoned from how the letters are formed rather
+ * than measured from signers, so REASONED_FLOOR bounds how far either can move
+ * a letter, and the debug panel reports both live so the reasoning can be
+ * checked against a real hand.
  *
  * The reliable fix is personalization. A model fitted to what MediaPipe
  * actually reports for *this* signer's T can separate it from their A even when
@@ -41,27 +50,52 @@ export const STATIC_LETTERS = [
 
 export const MOTION_LETTERS = ['J', 'Z'] as const;
 
+/**
+ * The six closed fists, which differ only by where the thumb is — and in T, N
+ * and M the thumb is underneath the fingers, so the camera never sees it.
+ *
+ * Offered as a calibration set of its own. The full twenty-four take about four
+ * minutes, which is long enough that most people never do it; these six take
+ * about ninety seconds and are where nearly all the errors are.
+ */
+export const FIST_CLUSTER = ['A', 'E', 'M', 'N', 'S', 'T'] as const;
+
 export const ALL_LETTERS: readonly string[] = [...STATIC_LETTERS, ...MOTION_LETTERS].sort();
 
-/** The known-hard clusters, surfaced in the UI so users know where to look. */
+/**
+ * Letters that genuinely fire on each other, surfaced in the correction sheet.
+ *
+ * Measured, not remembered: tests/helpers/letterCases.ts holds a canonical hand
+ * for every letter, and anything else scoring above 0.5 on it belongs here. A
+ * test keeps the two in step, so a template change that creates a new confusion
+ * either gets fixed or gets listed — it cannot quietly go unmentioned.
+ *
+ * Symmetric by construction. Whoever made the hand needs the other letter
+ * offered, whichever way round the recogniser got it wrong.
+ *
+ * The fist cluster dominates and always will: A, E, M, N, S and T are one hand
+ * with the thumb in six places, three of which the camera cannot see.
+ */
 export const CONFUSION_CLUSTERS: Record<string, readonly string[]> = {
-  A: ['S', 'T', 'M', 'N', 'E'],
-  E: ['S', 'M', 'N', 'O'],
-  M: ['N', 'S', 'T', 'E'],
-  N: ['M', 'T', 'S'],
-  S: ['A', 'T', 'M', 'E'],
-  T: ['S', 'N', 'A'],
-  R: ['U', 'V'],
-  U: ['R', 'V', 'H'],
-  V: ['U', 'R', 'K'],
-  K: ['V', 'P'],
+  A: ['E', 'M', 'N', 'O', 'S', 'T', 'X'],
+  C: ['O'],
+  D: ['F', 'X'],
+  E: ['A', 'M', 'N', 'O', 'S', 'T'],
+  F: ['D'],
+  G: ['H', 'Q'],
+  H: ['G', 'U'],
+  K: ['P', 'V'],
+  M: ['A', 'E', 'N', 'S', 'T'],
+  N: ['A', 'E', 'M', 'S', 'T'],
+  O: ['A', 'C', 'E'],
   P: ['K', 'Q'],
   Q: ['G', 'P'],
-  G: ['Q', 'H'],
-  H: ['U', 'G'],
-  D: ['F', 'X'],
-  O: ['C', 'E'],
-  C: ['O'],
+  R: ['U', 'V'],
+  S: ['A', 'E', 'M', 'N', 'T'],
+  T: ['A', 'E', 'M', 'N', 'S'],
+  U: ['H', 'R', 'V'],
+  V: ['K', 'R', 'U'],
+  X: ['A', 'D'],
 };
 
 // ---------------------------------------------------------------------------
@@ -83,11 +117,106 @@ const above = (v: number, lo: number, soft = 0.25) => ramp(v, lo - soft, lo);
 const near = (v: number, target: number, tol: number) =>
   clamp01(1 - Math.abs(v - target) / tol);
 
-function geomean(parts: number[]): number {
+/**
+ * The floor under every predicate that reads the fingers to infer where the
+ * thumb is. Nothing derived from HandGeometry.knuckleBend or .tipLift may
+ * multiply a letter's score by less than this.
+ *
+ * Both of those features are reasoned from how the letters are formed rather
+ * than measured from signers, and this is the safety margin on that reasoning.
+ * One of them alone can move a letter by a factor of five — enough to shade a
+ * near-tie — but not enough to overturn the thumb evidence on its own. Two of
+ * them agreeing can, by a factor of twenty-five, which is the intent: that is
+ * the case where every visible part of the hand is saying the same thing and
+ * only the invisible part disagrees.
+ *
+ * If the reasoning turns out to be wrong, these letters degrade back toward the
+ * thumb-only behaviour rather than inverting. The debug panel reports both
+ * features live so it can be checked against a real hand in about a minute.
+ */
+const REASONED_FLOOR = 0.2;
+
+/**
+ * How well the number of fingers lying over the thumb matches this letter.
+ *
+ * T covers the thumb with one finger, N with two, M with three; A, S and E with
+ * none. That count comes from the fingers alone — see HandGeometry.knuckleBend
+ * — which is the only part of these letters the camera can actually see.
+ */
+const drapes = (g: HandGeometry, expected: number) =>
+  REASONED_FLOOR +
+  (1 - REASONED_FLOOR) * clamp01(1 - Math.abs(g.drapedCount - expected) / 1.35);
+
+/**
+ * How far the fingertips are held off the palm — low in a true fist, high when
+ * they are resting on a thumb. See HandGeometry.tipLift.
+ */
+const lifts = (g: HandGeometry, target: number, tol = 0.16) =>
+  REASONED_FLOOR + (1 - REASONED_FLOOR) * near(g.tipLift, target, tol);
+
+/** Fingertips pressed into the palm, as in A and S. */
+const TIP_ON_PALM = 0.15;
+/** Fingertips propped up on a thumb, as in E, T, N and M. */
+const TIP_ON_THUMB = 0.34;
+
+/**
+ * Where the thumb sits, *when the fingers are lying on top of it*.
+ *
+ * In T, N and M the thumb is underneath the hand and the camera never sees it,
+ * so MediaPipe does not measure it — it infers one, and its inference is pulled
+ * toward the commonest fist, which is an A. Treating that inference as a hard
+ * requirement is what made these three letters unreachable: the guessed thumb
+ * never lands where the letter says it should, so the predicate zeroed and the
+ * A that MediaPipe had effectively already voted for won every time.
+ *
+ * So it is a prior here, not a requirement. It shades the choice between T, N
+ * and M when the guess happens to be good, and gets out of the way when it is
+ * not. A, S and E keep their thumb predicates at full strength, because in
+ * those three the thumb is genuinely in view.
+ */
+const tuckedNear = (g: HandGeometry, target: number, tol = 0.35) =>
+  0.55 + 0.45 * near(g.thumbAcross, target, tol);
+
+/** Where the bend sits: low in E, middling in a fist, high when draped. */
+const bendsAtKnuckle = (g: HandGeometry, target: number) =>
+  0.5 + 0.5 * clamp01(1 - Math.abs(g.curlBalance - target) / 0.22);
+
+/**
+ * Combine a letter's clauses into a score, letting the worst one matter.
+ *
+ * The header above claims a plain geometric mean means "one confidently-failed
+ * predicate is enough to rule a letter out". With eight clauses that is simply
+ * false: a clause failing at 0.2 among seven satisfied ones comes out at
+ * 0.2^(1/8) = 0.82. Measured against a canonical hand for every letter, that
+ * was not a rounding error —
+ *
+ *   K scored 0.82 on a V   (the only difference is the thumb, one clause)
+ *   A scored 0.80 on an X  (the only difference is one half-curled finger)
+ *   R scored 0.74 on a U   (the only difference is whether they are crossed)
+ *
+ * — three letter pairs where the *entire* distinction is a single predicate,
+ * and the single predicate was being averaged into irrelevance.
+ *
+ * So the weakest clause gets a third of the weight on its own, and the mean of
+ * everything gets the rest. A hand that fails one clause outright now lands near
+ * 0.5 instead of 0.8, and a hand that satisfies everything is still 1.0.
+ *
+ * Not a plain minimum, for the reason the handshape predicates give: landmarks
+ * are noisy, a real signer's letter always has one clause a little short, and
+ * scoring every letter by its worst frame would refuse to recognise anything.
+ * A third is enough to be decisive without being brittle.
+ */
+function combine(parts: number[]): number {
   if (parts.length === 0) return 0;
   let logSum = 0;
-  for (const p of parts) logSum += Math.log(Math.max(p, 1e-4));
-  return Math.exp(logSum / parts.length);
+  let worst = Infinity;
+  for (const p of parts) {
+    const clamped = Math.max(p, 1e-4);
+    logSum += Math.log(clamped);
+    if (clamped < worst) worst = clamped;
+  }
+  const mean = logSum / parts.length;
+  return Math.exp((2 / 3) * mean + (1 / 3) * Math.log(worst));
 }
 
 export interface LetterTemplate {
@@ -105,20 +234,28 @@ const T = (letter: string, hint: string, score: (g: HandGeometry) => number): Le
 
 export const LETTER_TEMPLATES: readonly LetterTemplate[] = [
   T('A', 'Fist, thumb resting alongside the index finger.', (g) =>
-    geomean([
+    combine([
       down(g.four[0]), down(g.four[1]), down(g.four[2]), down(g.four[3]),
-      // The thumb sits beside the index knuckle, not tucked in among the
-      // fingers. This is what separates A from T, N and M, and it is measured
-      // across the knuckles rather than in depth because MediaPipe invents a
-      // plausible thumb whenever the real one is hidden — and its guess looks
-      // like an A.
-      below(g.thumbAcross, 0.18, 0.2),
+      // A's thumb is the one fist thumb that is fully in view, riding up the
+      // radial side of the index finger — out past the index knuckle and above
+      // the knuckle line. So A is required to *show* that, rather than merely
+      // to not contradict it. It used to ask only that the thumb was not far
+      // across the knuckles, which every hallucinated thumb also satisfies,
+      // and that is most of why T, N and M were reading as A: the letter with
+      // the loosest requirement collects every hand the others cannot claim.
+      below(g.thumbAcross, 0.02, 0.28),
+      above(g.thumbAlong, 1.05, 0.3),
       above(g.fingers.thumb.extension, 0.3),
+      // Nothing is lying over the thumb, so the fingertips reach the palm and
+      // no finger is propped up at the knuckle. Both read off the fingers,
+      // which are visible, rather than off the thumb, which in T/N/M is not.
+      drapes(g, 0),
+      lifts(g, TIP_ON_PALM),
     ]),
   ),
 
   T('B', 'Flat hand, fingers together and straight, thumb folded across the palm.', (g) =>
-    geomean([
+    combine([
       up(g.four[0]), up(g.four[1]), up(g.four[2]), up(g.four[3]),
       below(g.gapIndexMiddle, 0.42), below(g.gapMiddleRing, 0.42), below(g.gapRingPinky, 0.45),
       down(g.fingers.thumb.extension),
@@ -127,17 +264,26 @@ export const LETTER_TEMPLATES: readonly LetterTemplate[] = [
   ),
 
   T('C', 'Hand curved into a C, thumb and fingers apart.', (g) =>
-    geomean([
+    combine([
       half(g.four[0]), half(g.four[1]), half(g.four[2]), half(g.four[3]),
       // The C opening: thumb and index tips are apart but the fingers are curved.
       near(g.thumbTo.index, 0.95, 0.75),
       above(g.thumbTo.index, 0.6),
-      above(g.fingers.thumb.extension, 0.25),
+      // The thumb carries this letter, and it has to be genuinely extended and
+      // opposing. 'Half-curled fingers' is the exact description of a hand at
+      // rest — half() peaks at 0.5 extension, which is what a relaxed hand
+      // reports — so with a thumb clause this weak, C scored 0.97 on a hand
+      // doing nothing. features/handshapes.ts already learned this and asks for
+      // 0.65; the letter did not. A relaxed thumb reads 0.5, so the band has
+      // to start above that or the clause is decorative.
+      above(g.fingers.thumb.extension, 0.7, 0.15),
+      // Fingers curved together as one unit, not splayed.
+      below(g.gapIndexMiddle, 0.5),
     ]),
   ),
 
   T('D', 'Index finger up, other fingertips meeting the thumb.', (g) =>
-    geomean([
+    combine([
       up(g.four[0]),
       down(g.four[1]), down(g.four[2]), down(g.four[3]),
       below(g.thumbTo.middle, 0.6),
@@ -146,17 +292,25 @@ export const LETTER_TEMPLATES: readonly LetterTemplate[] = [
   ),
 
   T('E', 'Fingers curled down, fingertips resting on the folded thumb.', (g) =>
-    geomean([
+    combine([
       down(g.four[0]), down(g.four[1]), down(g.four[2]), down(g.four[3]),
       down(g.fingers.thumb.extension),
       // Tips come down to meet the thumb, unlike S where they clamp over it.
       below(g.thumbTo.index, 0.62), below(g.thumbTo.middle, 0.72),
       below(Math.abs(g.thumbDepth), 0.3),
+      // Fingertips reach down to the folded thumb, so the knuckles stay open
+      // and the bend piles up past them — the opposite of a draped letter.
+      drapes(g, 0),
+      bendsAtKnuckle(g, 0.24),
+      // The thumb is across the palm rather than under the fingers, so the tips
+      // come to rest on it. Undraped like A and S, lifted like T, N and M —
+      // which is the corner of the two-feature space that only E occupies.
+      lifts(g, TIP_ON_THUMB),
     ]),
   ),
 
   T('F', 'Thumb and index make a circle, other three fingers up.', (g) =>
-    geomean([
+    combine([
       below(g.thumbTo.index, 0.42),
       up(g.four[1]), up(g.four[2]), up(g.four[3]),
       below(g.four[0], 0.75, 0.3),
@@ -164,7 +318,7 @@ export const LETTER_TEMPLATES: readonly LetterTemplate[] = [
   ),
 
   T('G', 'Index finger and thumb extended, pointing sideways.', (g) =>
-    geomean([
+    combine([
       up(g.four[0]),
       down(g.four[1]), down(g.four[2]), down(g.four[3]),
       above(g.fingers.thumb.extension, 0.4),
@@ -175,7 +329,7 @@ export const LETTER_TEMPLATES: readonly LetterTemplate[] = [
   ),
 
   T('H', 'Index and middle fingers together, pointing sideways.', (g) =>
-    geomean([
+    combine([
       up(g.four[0]), up(g.four[1]),
       down(g.four[2]), down(g.four[3]),
       below(g.gapIndexMiddle, 0.5),
@@ -184,7 +338,7 @@ export const LETTER_TEMPLATES: readonly LetterTemplate[] = [
   ),
 
   T('I', 'Pinky up, everything else closed.', (g) =>
-    geomean([
+    combine([
       down(g.four[0]), down(g.four[1]), down(g.four[2]),
       up(g.four[3]),
       down(g.fingers.thumb.extension),
@@ -193,7 +347,7 @@ export const LETTER_TEMPLATES: readonly LetterTemplate[] = [
   ),
 
   T('K', 'Index and middle up in a V, thumb between them.', (g) =>
-    geomean([
+    combine([
       up(g.four[0]), up(g.four[1]),
       down(g.four[2]), down(g.four[3]),
       above(g.gapIndexMiddle, 0.5),
@@ -205,7 +359,7 @@ export const LETTER_TEMPLATES: readonly LetterTemplate[] = [
   ),
 
   T('L', 'Index up, thumb out - an L shape.', (g) =>
-    geomean([
+    combine([
       up(g.four[0]),
       down(g.four[1]), down(g.four[2]), down(g.four[3]),
       above(g.fingers.thumb.extension, 0.5),
@@ -216,26 +370,35 @@ export const LETTER_TEMPLATES: readonly LetterTemplate[] = [
   ),
 
   T('M', 'Thumb tucked under three fingers.', (g) =>
-    geomean([
+    combine([
       down(g.four[0]), down(g.four[1]), down(g.four[2]), down(g.four[3]),
-      // Thumb tip emerges past the ring knuckle, near the pinky.
-      above(g.thumbAcross, 0.62, 0.25),
-      below(g.thumbAcross, 1.15, 0.25),
+      // Thumb tip emerges past the ring knuckle, near the pinky — but it is
+      // underneath three fingers, so this is a prior, not a requirement.
+      tuckedNear(g, 0.85, 0.4),
       down(g.fingers.thumb.extension),
+      // Three fingers over the thumb, holding their tips off the palm. This is
+      // what actually has to carry M, because it is the only part of the letter
+      // the camera can see.
+      drapes(g, 3),
+      lifts(g, TIP_ON_THUMB),
     ]),
   ),
 
   T('N', 'Thumb tucked under two fingers.', (g) =>
-    geomean([
+    combine([
       down(g.four[0]), down(g.four[1]), down(g.four[2]), down(g.four[3]),
       // Between the middle and ring knuckles: further in than T, short of M.
-      near(g.thumbAcross, 0.55, 0.3),
+      // Hidden under two fingers, so it only shades the choice — see tuckedNear.
+      tuckedNear(g, 0.55),
       down(g.fingers.thumb.extension),
+      // Two fingers over the thumb, holding their tips off the palm.
+      drapes(g, 2),
+      lifts(g, TIP_ON_THUMB),
     ]),
   ),
 
   T('O', 'All fingertips meet the thumb in a round O.', (g) =>
-    geomean([
+    combine([
       half(g.four[0]), half(g.four[1]), half(g.four[2]), half(g.four[3]),
       below(g.thumbTo.index, 0.5),
       below(g.thumbTo.middle, 0.72),
@@ -244,27 +407,31 @@ export const LETTER_TEMPLATES: readonly LetterTemplate[] = [
   ),
 
   T('P', 'K shape rotated to point downward.', (g) =>
-    geomean([
+    combine([
       up(g.four[0]), up(g.four[1]),
       down(g.four[2]), down(g.four[3]),
       above(g.gapIndexMiddle, 0.45),
       above(g.fingers.thumb.extension, 0.3),
-      below(g.pointing, -0.15, 0.45),
+      // Pointing down is the whole of P's identity — it is a K rotated — so the
+      // band has to be tight enough to actually exclude a K.
+      below(g.pointing, -0.3, 0.3),
     ]),
   ),
 
   T('Q', 'G shape rotated to point downward.', (g) =>
-    geomean([
+    combine([
       up(g.four[0]),
       down(g.four[1]), down(g.four[2]), down(g.four[3]),
       above(g.fingers.thumb.extension, 0.35),
-      below(g.pointing, -0.15, 0.45),
+      // Same for Q against G. It scored 0.92 on a G with the old band, which is
+      // to say orientation was not really being required at all.
+      below(g.pointing, -0.3, 0.3),
       above(g.thumbTo.index, 0.5),
     ]),
   ),
 
   T('R', 'Index and middle fingers crossed.', (g) =>
-    geomean([
+    combine([
       up(g.four[0]), up(g.four[1]),
       down(g.four[2]), down(g.four[3]),
       g.indexMiddleCrossed ? 1 : 0.12,
@@ -274,27 +441,36 @@ export const LETTER_TEMPLATES: readonly LetterTemplate[] = [
   ),
 
   T('S', 'Fist with the thumb crossing in front of the fingers.', (g) =>
-    geomean([
+    combine([
       down(g.four[0]), down(g.four[1]), down(g.four[2]), down(g.four[3]),
       down(g.fingers.thumb.extension),
       // Lying across the front of the fist, so the tip reaches the middle of
       // the knuckle line but stays low against it rather than poking through.
       near(g.thumbAcross, 0.45, 0.45),
       below(g.thumbAlong, 1.05, 0.3),
+      // Across the front, so nothing is underneath propping a finger up and the
+      // fingertips still reach the palm.
+      drapes(g, 0),
+      lifts(g, TIP_ON_PALM),
     ]),
   ),
 
   T('T', 'Fist with the thumb poking between index and middle fingers.', (g) =>
-    geomean([
+    combine([
       down(g.four[0]), down(g.four[1]), down(g.four[2]), down(g.four[3]),
-      // Just inside the index knuckle — the shallowest of the tucked thumbs.
-      near(g.thumbAcross, 0.3, 0.28),
+      // Just inside the index knuckle — the shallowest of the tucked thumbs,
+      // and the one MediaPipe's guess lands nearest to, which is exactly why it
+      // cannot be trusted to separate T from A. A prior, not a requirement.
+      tuckedNear(g, 0.3),
       down(g.fingers.thumb.extension),
+      // One finger over the thumb, holding its tip off the palm.
+      drapes(g, 1),
+      lifts(g, TIP_ON_THUMB),
     ]),
   ),
 
   T('U', 'Index and middle up and together.', (g) =>
-    geomean([
+    combine([
       up(g.four[0]), up(g.four[1]),
       down(g.four[2]), down(g.four[3]),
       below(g.gapIndexMiddle, 0.4),
@@ -304,7 +480,7 @@ export const LETTER_TEMPLATES: readonly LetterTemplate[] = [
   ),
 
   T('V', 'Index and middle up and apart.', (g) =>
-    geomean([
+    combine([
       up(g.four[0]), up(g.four[1]),
       down(g.four[2]), down(g.four[3]),
       above(g.gapIndexMiddle, 0.62),
@@ -314,7 +490,7 @@ export const LETTER_TEMPLATES: readonly LetterTemplate[] = [
   ),
 
   T('W', 'Index, middle and ring up and apart.', (g) =>
-    geomean([
+    combine([
       up(g.four[0]), up(g.four[1]), up(g.four[2]),
       down(g.four[3]),
       above(g.gapIndexMiddle, 0.4),
@@ -324,7 +500,7 @@ export const LETTER_TEMPLATES: readonly LetterTemplate[] = [
   ),
 
   T('X', 'Index finger hooked, everything else closed.', (g) =>
-    geomean([
+    combine([
       half(g.four[0]),
       down(g.four[1]), down(g.four[2]), down(g.four[3]),
       down(g.fingers.thumb.extension),
@@ -335,7 +511,7 @@ export const LETTER_TEMPLATES: readonly LetterTemplate[] = [
   ),
 
   T('Y', 'Thumb and pinky out, middle three closed.', (g) =>
-    geomean([
+    combine([
       down(g.four[0]), down(g.four[1]), down(g.four[2]),
       up(g.four[3]),
       above(g.fingers.thumb.extension, 0.45),

@@ -198,6 +198,11 @@ body {
   }
   .sb-control-bar .sb-panel {
     padding-block: 0.375rem;
+    /* Overrides the 44px touch target. A phone held in landscape has about
+       380px of height in total; keeping every control at 44 would spend a
+       quarter of the screen on the button bar, and the camera view is the one
+       thing that cannot be compressed. */
+    min-height: 2.25rem;
   }
 }
 

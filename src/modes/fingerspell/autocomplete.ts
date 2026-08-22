@@ -87,15 +87,29 @@ export class Autocomplete {
 /**
  * Every prefix reachable by substituting exactly one letter with a member of
  * its confusion cluster. Capped so a long prefix cannot blow up the search.
+ *
+ * The budget is spread across positions rather than spent left to right. That
+ * used to be position-major: all of the first letter's alternatives, then all
+ * of the second's, until the cap ran out. With A now carrying seven measured
+ * confusions instead of two, twenty-four variants is gone by the fourth letter,
+ * so a misread near the end of a word — where it is exactly as likely as one at
+ * the start — was never searched for at all.
+ *
+ * Round-robin gives every position its first alternative before any position
+ * gets its second, at identical cost. The alternatives are already ordered with
+ * the likeliest confusion first, so the budget goes to the likeliest error
+ * anywhere in the word rather than to every error in its opening.
  */
 export function confusionVariants(prefix: string, maxVariants = 24): string[] {
   const out: string[] = [];
-  for (let i = 0; i < prefix.length && out.length < maxVariants; i++) {
-    const alternatives = LETTER_CONFUSIONS[prefix[i]];
-    if (!alternatives) continue;
-    for (const alt of alternatives) {
+  const clusters = [...prefix].map((letter) => LETTER_CONFUSIONS[letter] ?? []);
+  const deepest = clusters.reduce((most, c) => Math.max(most, c.length), 0);
+
+  for (let rank = 0; rank < deepest && out.length < maxVariants; rank++) {
+    for (let i = 0; i < prefix.length && out.length < maxVariants; i++) {
+      const alt = clusters[i][rank];
+      if (alt === undefined) continue;
       out.push(prefix.slice(0, i) + alt + prefix.slice(i + 1));
-      if (out.length >= maxVariants) break;
     }
   }
   return out;

@@ -64,14 +64,34 @@ const INLINE_MAX_FPS = 20;
 const COST_SMOOTHING = 0.2;
 
 /**
- * Headroom over measured inference time.
+ * Headroom over measured inference time, for the inline path only.
  *
- * Requesting frames faster than they can be processed does not produce more
- * captions — the extra frames are dropped, having already cost a copy — and it
- * grows the gap between what the camera shows and what the overlay draws. Asking
- * only slightly faster than we can answer keeps that gap small.
+ * Inline inference blocks the main thread, so running it flat out starves
+ * rendering. Asking only slightly faster than the last frame took keeps the UI
+ * alive. The worker path does not need this — see the note on `inFlight`.
  */
 const PACING_HEADROOM = 1.15;
+
+/**
+ * How long to wait for a worker that has gone quiet before capturing anyway.
+ *
+ * Only reached if a frame is lost in transit — every normal path posts back a
+ * result or an error. Without it, one dropped message would stall capture
+ * forever.
+ */
+const IN_FLIGHT_TIMEOUT_MS = 1000;
+
+/**
+ * Slack on the capture interval, as a fraction of it.
+ *
+ * Video frames arrive on the camera's clock, not ours. Testing `elapsed >=
+ * interval` exactly means that whenever the required interval creeps just past
+ * the camera's frame period — 34ms against a 30fps camera's 33.3 — every single
+ * callback fails the test by a hair and we capture every *other* frame instead,
+ * halving the rate at the moment we could least afford it. A little slack keeps
+ * the pacing continuous instead of falling off that cliff.
+ */
+const PACING_SLACK = 0.25;
 
 export class VisionClient {
   private worker: Worker | null = null;
@@ -89,6 +109,19 @@ export class VisionClient {
   private costMs = 0;
   /** Whether createImageBitmap accepts the resize options bag here. */
   private canResizeBitmap = true;
+  /**
+   * When the frame currently being landmarked was handed to the worker, or 0
+   * when the worker is free.
+   *
+   * This is the real backpressure. The worker already drops a frame that
+   * arrives while it is busy — but by then the main thread has paid for a
+   * full-frame `createImageBitmap`, which is a GPU copy and a synchronisation
+   * point, and thrown the result away. Doing that several times a second is
+   * exactly the kind of main-thread work that makes the video stutter and the
+   * overlay feel like it is dragging. Knowing the worker is busy lets us not
+   * take the picture at all.
+   */
+  private inFlightSince = 0;
 
   mode: VisionMode = 'worker';
 
@@ -142,6 +175,7 @@ export class VisionClient {
 
     this.worker?.terminate();
     this.worker = null;
+    this.inFlightSince = 0;
     await this.startInline();
   }
 
@@ -182,11 +216,20 @@ export class VisionClient {
   }
 
   /**
-   * Capture rate, after the inline ceiling and after backing off to whatever
-   * this device can actually sustain.
+   * Capture rate.
+   *
+   * On the worker path this is just the ceiling the user asked for: the
+   * in-flight guard already stops us outrunning the worker, and it does so
+   * without guessing. Throttling below what the worker can actually manage only
+   * widens the gap between the hand and the skeleton, which is the exact
+   * complaint this pipeline exists to avoid.
+   *
+   * Inline is different — inference there costs main-thread time — so it keeps
+   * both the lower ceiling and the cost-based backoff.
    */
   private get effectiveFps(): number {
-    const ceiling = this.mode === 'inline' ? Math.min(this.targetFps, INLINE_MAX_FPS) : this.targetFps;
+    if (this.mode !== 'inline') return this.targetFps;
+    const ceiling = Math.min(this.targetFps, INLINE_MAX_FPS);
     if (this.costMs <= 0) return ceiling;
     const sustainable = 1000 / (this.costMs * PACING_HEADROOM);
     // Never fall below 8fps: past that the dwell timer stops feeling responsive
@@ -203,6 +246,7 @@ export class VisionClient {
     this.running = false;
     this.ready = false;
     this.costMs = 0;
+    this.inFlightSince = 0;
     if (this.rafHandle !== null) cancelAnimationFrame(this.rafHandle);
     if (this.vfcHandle !== null && this.video?.cancelVideoFrameCallback) {
       this.video.cancelVideoFrameCallback(this.vfcHandle);
@@ -259,10 +303,12 @@ export class VisionClient {
         this.events.onReady?.(msg.delegate, msg.poseEnabled, 'worker');
         break;
       case 'result':
+        this.inFlightSince = 0;
         this.noteCost(msg.inferenceMs);
         this.events.onFrame(msg.frame, msg.inferenceMs);
         break;
       case 'error':
+        this.inFlightSince = 0;
         if (msg.fatal) {
           // Any fatal worker error is worth retrying on the main thread, not
           // just one during startup: a worker that dies when the user switches
@@ -297,7 +343,17 @@ export class VisionClient {
     const video = this.video;
     if (!video || !this.ready || video.readyState < 2 || video.videoWidth === 0) return;
 
-    if (now - this.lastCapture < 1000 / this.effectiveFps) return;
+    const interval = 1000 / this.effectiveFps;
+    if (now - this.lastCapture < interval * (1 - PACING_SLACK)) return;
+
+    if (this.mode === 'worker' && this.inFlightSince !== 0) {
+      if (now - this.inFlightSince < IN_FLIGHT_TIMEOUT_MS) return;
+      // The worker has gone quiet for a second. Assume the frame is lost rather
+      // than never capturing again.
+      console.warn('Vision worker did not answer; resuming capture.');
+      this.inFlightSince = 0;
+    }
+
     this.lastCapture = now;
 
     if (this.mode === 'inline') {
@@ -312,9 +368,12 @@ export class VisionClient {
     }
 
     try {
-      this.send({ type: 'frame', bitmap: await this.grab(video), t: now });
+      const bitmap = await this.grab(video);
+      this.inFlightSince = performance.now();
+      this.send({ type: 'frame', bitmap, t: now });
     } catch {
       // A frame can vanish mid-grab when the track ends. Not worth surfacing.
+      this.inFlightSince = 0;
     }
   }
 }

@@ -7,7 +7,7 @@
  * months ago will hand you the old shape.
  */
 
-export const SETTINGS_VERSION = 3;
+export const SETTINGS_VERSION = 4;
 
 export type Mode = 'fingerspell' | 'signs' | 'conversation' | 'reverse';
 export type DominantHand = 'right' | 'left' | 'auto';
@@ -19,6 +19,12 @@ export type FontChoice = 'display' | 'system' | 'dyslexic';
 export type Theme = 'light' | 'dark' | 'contrast' | 'system';
 export type Backend = 'auto' | 'webgpu' | 'webgl' | 'wasm';
 export type Precision = 'full' | 'quantized';
+/**
+ * How hard the raw landmark stream is filtered before anything reads it.
+ * Defined by the filter itself so the setting and the implementation cannot
+ * drift apart.
+ */
+export type { SmoothingLevel } from '@/features/smoothing';
 
 export interface RecognitionSettings {
   mode: Mode;
@@ -32,6 +38,12 @@ export interface RecognitionSettings {
   autoSpaceMs: number;
   /** 1 - 15 frames */
   smoothingWindow: number;
+  /**
+   * Jitter filtering applied to the landmarks themselves, before any rule or
+   * model sees them. Separate from smoothingWindow, which votes over *labels*:
+   * this steadies the hand, that steadies the letter.
+   */
+  landmarkSmoothing: import('@/features/smoothing').SmoothingLevel;
   /** Suggest completions as letters accumulate. */
   wordPrediction: boolean;
 }
