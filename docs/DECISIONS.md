@@ -1327,3 +1327,57 @@ means the machinery works — resampling, the path floor, the handshape gate, th
 refractory period, the span normalization. It does **not** mean the templates
 describe how a real person draws a J. Nothing here can tell you that, and the
 templates remain unvalidated against a real signer.
+
+## The first CI run, and what it found
+
+`.github/workflows/ci.yml` was untracked and listed in `.git/info/exclude`, so
+nothing under `.github` had ever been committed and no job had ever run. Opening
+PR #1 ran it for the first time.
+
+**`check` passed on the first attempt** — typecheck, 662 tests, fixture sync,
+build, bundle budget.
+
+**`training` failed at `pip install`, and the reason is the best possible one:**
+
+```
+The user requested numpy==2.2.1
+mediapipe 0.10.21 depends on numpy<2
+ERROR: ResolutionImpossible
+```
+
+`training/requirements.txt` was **unsatisfiable**. Not "broke on a new release" —
+it could never have resolved, from the day it was written. Nobody following the
+README could have installed the pipeline at all, which is entirely consistent
+with the README's own note that none of it had ever been run.
+
+This is precisely the class of failure the job was built to catch, and it took
+the job's first run to catch it. Pinned to `numpy==1.26.4`, which satisfies
+mediapipe, onnx, onnxruntime, torch and pandas together.
+
+## Two copies of the same fact had drifted
+
+`LETTER_CONFUSIONS` in `wordlist.ts` widens the completion search to cover the
+letters the recogniser mixes up — and it carried the comment *"Keep this in sync
+with CONFUSION_CLUSTERS in letterTemplates.ts."*
+
+It had not been. Regenerating CONFUSION_CLUSTERS from measurement put A with E,
+M, N, O, S, T and X; this list had A with S and T. It had no entry for F or X at
+all. Every missing pair is an error the classifier makes and the completion
+layer could not recover — the opposite of what the layer is for, and exactly the
+weakness the brief says it exists to cover.
+
+It is now *derived* from CONFUSION_CLUSTERS rather than copied from it. Two
+copies of a fact drift; one cannot.
+
+### And the search never reached the end of a word
+
+`confusionVariants` spent its 24-variant budget left to right: every alternative
+for the first letter, then the second, until it ran out. With A now carrying
+seven measured confusions rather than two, the budget is gone by the fourth
+letter — so a misread near the end of a word, exactly as likely as one at the
+start, was never searched for.
+
+Round-robin now: every position gets its first alternative before any position
+gets its second. Same cost, and since alternatives are ordered likeliest-first,
+the budget goes to the likeliest error *anywhere* in the word instead of every
+error in its opening.

@@ -10,6 +10,8 @@
  * persisted locally (see autocomplete.ts), which is what actually makes the
  * suggestions feel personal - names, places and jargon come from there.
  */
+import { CONFUSION_CLUSTERS } from './letterTemplates';
+
 export const COMMON_WORDS: readonly string[] = [
   'the', 'be', 'to', 'of', 'and', 'a', 'in', 'that', 'have', 'i',
   'it', 'for', 'not', 'on', 'with', 'he', 'as', 'you', 'do', 'at',
@@ -61,24 +63,19 @@ export const COMMON_WORDS: readonly string[] = [
 
 /**
  * Letters the recogniser genuinely confuses, used to widen prefix search.
- * Keep this in sync with CONFUSION_CLUSTERS in letterTemplates.ts.
+ *
+ * Derived from CONFUSION_CLUSTERS rather than copied from it. It used to be a
+ * hand-maintained duplicate carrying the instruction 'keep this in sync', and
+ * it had drifted — badly enough to matter. The classifier's measured confusions
+ * put A with E, M, N, O, S, T and X; this list had A with S and T. Every pair it
+ * was missing is an error the recogniser makes and the completion layer could
+ * not recover, which is the opposite of the job.
+ *
+ * Two copies of the same fact drift. This one now cannot.
  */
-export const LETTER_CONFUSIONS: Record<string, readonly string[]> = {
-  m: ['n', 's', 't', 'e'],
-  n: ['m', 't', 's'],
-  s: ['a', 't', 'm', 'e'],
-  t: ['s', 'n', 'a'],
-  e: ['s', 'm', 'o'],
-  a: ['s', 't'],
-  r: ['u', 'v'],
-  u: ['r', 'v'],
-  v: ['u', 'r'],
-  k: ['v', 'p'],
-  p: ['k', 'q'],
-  q: ['g', 'p'],
-  g: ['q', 'h'],
-  h: ['u', 'g'],
-  d: ['f', 'x'],
-  o: ['c', 'e'],
-  c: ['o'],
-};
+export const LETTER_CONFUSIONS: Record<string, readonly string[]> = Object.fromEntries(
+  Object.entries(CONFUSION_CLUSTERS).map(([letter, others]) => [
+    letter.toLowerCase(),
+    others.map((o) => o.toLowerCase()),
+  ]),
+);
