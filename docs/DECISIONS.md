@@ -1279,3 +1279,51 @@ Three constraints on it, all tested:
 
 The settings hint now says the dial is the middle of a range rather than a fixed
 wait, because it is.
+
+## J and Z: two letters that had never been tested, and one that raced
+
+### They had no tests at all
+
+Two of the twenty-six letters, with their own detection path, and no coverage of
+any kind — "does J work" had no answer other than trying it. The static alphabet
+at least had the fist cluster checked.
+
+Writing the tests found J and Z **firing not at all** on trajectories built by
+walking their own templates. `lastFireAt` initialised to `0`, and the refractory
+period is "no motion letter within 700ms of the last one" — so a fresh detector
+claimed one had fired at time zero and refused for the first 700ms of the
+timeline.
+
+Whether that bites depends entirely on the caller's clock. With
+`performance.now()` the first frame is already thousands of milliseconds in and
+nothing is blocked, which is presumably why it was never noticed. With any clock
+starting near zero, J and Z are simply dead at the start of a session.
+`DwellCommitter.lastCommitAt` already used `-Infinity`; this now does too.
+
+### The static head was about to start eating them
+
+J is an I that moves; Z is a D that moves. While either is being drawn the
+static classifier reports that letter — correctly, and confidently, because that
+genuinely is the handshape. Detection needs a full 12-frame window, about 400ms.
+The static commit needs its dwell.
+
+Those two race, and which wins is an accident of configuration. Adaptive dwell
+made it a likelier accident: an unambiguous I now commits in about 300ms, before
+the movement has been seen at all. The user draws a J and gets an I.
+
+`MotionLetterDetector.inProgress` reports that a motion letter is under way, and
+the frame loop withholds the static letter while it is — no label and no
+distribution, the same withholding the scan-quality gate already uses, so the
+smoothing window has nothing to average either.
+
+It requires **movement**, not merely the handshape. A still I is an I and has to
+commit as one; suppressing that would be a worse bug than the one being fixed,
+and it is the first thing the tests check.
+
+### Worth noting about the tests
+
+They walk the same direction templates the detector matches against, so passing
+means the machinery works — resampling, the path floor, the handshape gate, the
+refractory period, the span normalization. It does **not** mean the templates
+describe how a real person draws a J. Nothing here can tell you that, and the
+templates remain unvalidated against a real signer.

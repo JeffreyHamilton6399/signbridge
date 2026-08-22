@@ -287,13 +287,21 @@ export function useFingerspell(enabled: boolean): FingerspellApi {
       });
 
       const centroid = handCentroid(hand.landmarks);
+      // A J is an I that moves and a Z is a D that moves, so while either is
+      // being drawn the static classifier is reporting that letter — correctly,
+      // and confidently, because that is genuinely the handshape. Detection
+      // needs a full motion window; the static commit needs its dwell. Left to
+      // race, a J arrives as an I. Withhold until the movement resolves, the
+      // same way an unreadable frame is withheld: no label and no distribution,
+      // so the smoothing window has nothing to average either.
+      const drawing = motion.inProgress(prediction.distribution);
       const event = committer.feed({
-        label: prediction.label,
-        confidence: prediction.confidence,
+        label: drawing ? null : prediction.label,
+        confidence: drawing ? 0 : prediction.confidence,
         // Hand the committer the whole distribution, not just the winner: it
         // averages across the smoothing window instead of voting, which is what
         // keeps the near-tie letters from flickering. See debouncer.ts.
-        distribution: prediction.distribution,
+        distribution: drawing ? undefined : prediction.distribution,
         handY: centroid.y,
         t: frame.t,
       });
